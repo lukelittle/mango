@@ -4,9 +4,12 @@ use mango::raft::parse_members;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Mango: a MongoDB-compatible document database with built-in Raft replication.
+/// 🥭 Mango: a MongoDB-compatible document database with built-in Raft replication.
+///
+/// Plant one node for a quick taste, or an orchard of three or five across
+/// availability zones: the harvest survives losing any minority of trees.
 #[derive(Parser, Debug)]
-#[command(version, about)]
+#[command(version, about, long_about)]
 struct Args {
     /// Directory for the database file and snapshots.
     #[arg(long, env = "MANGO_DATA_DIR", default_value = "./mango-data")]
@@ -86,6 +89,10 @@ struct Args {
     #[arg(long, env = "MANGO_KEEP_ENTRIES", default_value_t = 5_000, hide = true)]
     keep_entries: u64,
 
+    /// Skip the startup banner.
+    #[arg(long, env = "MANGO_NO_BANNER", default_value_t = false)]
+    no_banner: bool,
+
     /// Log level filter (e.g. "info", "mango=debug").
     #[arg(long, env = "MANGO_LOG", default_value = "info")]
     log: String,
@@ -97,6 +104,33 @@ fn hostname() -> String {
         .filter(|h| !h.is_empty())
         .or_else(|| std::fs::read_to_string("/etc/hostname").ok().map(|s| s.trim().to_string()))
         .unwrap_or_else(|| "localhost".into())
+}
+
+const MANGO_ART: &str = r#"
+          \ //
+           \/
+        .-'``'-.
+      .'   ___  '.
+     /   .'   '.  \
+    |   /  ~~   \  |
+    |   \  ~~   /  |
+     \   '.___.'  /
+      '.        .'
+        '-.__.-'"#;
+
+fn banner(cfg: &Config) -> String {
+    let trees = cfg.members.len().max(1);
+    let orchard = if trees == 1 {
+        "a single tree (no replication)".to_string()
+    } else {
+        format!("tree {} of an orchard of {trees} (survives losing {})", cfg.node_id, (trees - 1) / 2)
+    };
+    format!(
+        "{MANGO_ART}\n   mango {} · ripe, juicy, MongoDB-compatible\n   planting {orchard}\n   clients: {} · data: {}\n",
+        env!("CARGO_PKG_VERSION"),
+        cfg.advertise,
+        cfg.data_dir.display()
+    )
 }
 
 fn main() {
@@ -178,6 +212,9 @@ fn real_main(args: Args) -> Result<(), String> {
     if cfg.heartbeat * 3 > cfg.election_timeout {
         return Err("the election timeout must be at least 3x the heartbeat interval".into());
     }
+    if !args.no_banner {
+        eprintln!("{}", banner(&cfg));
+    }
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| e.to_string())?;
     rt.block_on(async move {
         app::start(cfg).await.map_err(|e| e.to_string())?;
@@ -186,7 +223,7 @@ fn real_main(args: Args) -> Result<(), String> {
             r = tokio::signal::ctrl_c() => r.map_err(|e| e.to_string())?,
             _ = term.recv() => {}
         }
-        tracing::info!("shutting down");
+        tracing::info!("🧺 shutting down; the harvest is safely stored");
         Ok(())
     })
 }

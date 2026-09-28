@@ -177,6 +177,7 @@ async fn catalog_commands() {
 
     let st = c.database("admin").run_command(doc! {"mangoStatus": 1}).await.unwrap();
     assert_eq!(st.get_str("role").unwrap(), "leader");
+    assert_eq!(st.get_str("ripeness").unwrap(), "ripe");
     let _ = ObjectId::new();
 }
 

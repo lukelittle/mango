@@ -1,4 +1,4 @@
-# Mango on Kubernetes: a 3-node cluster spread across availability zones.
+# 🥭 Mango on Kubernetes: a 3-node orchard (cluster), one tree per availability zone.
 #
 #   kubectl create namespace mango
 #   kubectl -n mango create secret generic mango-secrets \

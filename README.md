@@ -7,7 +7,23 @@ cargo run --release -- --data-dir ./data            # single node on :27017
 mongosh "mongodb://localhost:27017"                  # or any MongoDB driver
 ```
 
-## Where Mango improves on MongoDB
+### 🌳 Orchard glossary
+
+The docs and logs use a few orchard words. They map directly onto the usual terms, and the real terms appear alongside them everywhere that matters (commands, config flags, `role` fields).
+
+| Orchard | Plain terms |
+|---|---|
+| **tree** | a node (one `mango` process) |
+| **orchard** | the cluster |
+| **ripe** 🥭 | the Raft leader (accepts writes) |
+| **ripening** | a follower |
+| **blossoming** 🌼 | a node running for election |
+| **harvest** 🧺 | your data |
+| **grafting** | installing a snapshot on a node that fell behind |
+
+`db.adminCommand({mangoStatus: 1})` reports both, for example `role: "leader"` together with `ripeness: "ripe"`.
+
+## 🥭 Where Mango improves on MongoDB
 
 These are design choices. The tests in `tests/` exercise each one.
 
@@ -22,7 +38,7 @@ These are design choices. The tests in `tests/` exercise each one.
 
 Consensus includes **pre-vote** and **leader stickiness**, so a node rejoining after a partition cannot disrupt a healthy leader. It also includes **check-quorum**: a leader that loses contact with the majority steps down within two election timeouts and stops accepting writes it could not commit. **Snapshots** bring nodes that fell far behind, or that lost their disk, back up to date.
 
-## Measured behaviour
+## 🧪 Measured behaviour
 
 From the test suite, running three `mango` processes on localhost with a 400 ms election timeout and the official MongoDB Rust driver:
 
@@ -34,7 +50,7 @@ With default settings in Docker Compose, PyMongo wrote 100 documents in 2.2 s st
 
 Also tested: the official Rust driver, PyMongo, and `mongosh`.
 
-## Deploying across availability zones
+## 🌳 Deploying across availability zones (planting an orchard)
 
 A three-node cluster survives the loss of any one zone. A five-node cluster survives two.
 
@@ -81,7 +97,7 @@ mango --node-id 1 \
 
 Each member is `id=raft_address/client_address`. Nodes use the raft address to reach each other (port 7017 here). Drivers are given the client address. Keep port 7017 private to the cluster.
 
-## Configuration
+## 🧑‍🌾 Configuration
 
 Every flag has an environment variable (`--auth` → `MANGO_AUTH`, and so on). See `mango --help`.
 
@@ -99,7 +115,7 @@ Every flag has an environment variable (`--auth` → `MANGO_AUTH`, and so on). S
 | `--no-forward-writes` | off | Followers reject writes like MongoDB secondaries do |
 | `--heartbeat-ms`, `--election-timeout-ms` | 150, 1500 | Suited to latency within a region. Raise them for clusters that span regions. |
 
-## Compatibility
+## 🍹 Compatibility
 
 Mango reports itself as MongoDB 6.0 (wire version 17).
 
@@ -133,7 +149,7 @@ Mango reports itself as MongoDB 6.0 (wire version 17).
 * **Decimal128.** Values are stored and compared, but arithmetic on them is done as double.
 * **No awaitable `hello`.** Drivers find out about a new leader when a write fails with `NotWritablePrimary` (they retry immediately) or at their next heartbeat.
 
-## Architecture
+## 🌱 Architecture
 
 ```
 client ──► wire.rs (OP_MSG/OP_QUERY) ──► server.rs / commands.rs
@@ -148,7 +164,7 @@ client ──► wire.rs (OP_MSG/OP_QUERY) ──► server.rs / commands.rs
 * **`statemachine.rs`**: `apply` is deterministic. Generated `_id`s and timestamps are fixed when a write is proposed, so every replica computes the same state and the same reply.
 * **`raft/`**: leader election with pre-vote, log replication, commit, compaction, snapshot transfer, and write forwarding. The Raft state machine runs on one thread. Networking is async (tokio), using length-prefixed BSON frames multiplexed over one connection per peer.
 
-## Development
+## 🔪 Development (slicing it open)
 
 ```sh
 cargo test                                   # unit + driver + 3-process cluster tests
@@ -156,3 +172,4 @@ MANGO_CHAOS_ROUNDS=25 cargo test --test cluster chaos -- --nocapture
 python tests/compat/pymongo_smoke.py "mongodb://127.0.0.1:27017/?directConnection=true"
 ```
 
+*Grown with care. Best served chilled.* 🥭

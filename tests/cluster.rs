@@ -34,7 +34,10 @@ impl Cluster {
     fn new(n: u64, extra: &[&str]) -> Cluster {
         let dir = tempfile::tempdir().unwrap();
         let key_file = dir.path().join("cluster.key");
-        std::fs::write(&key_file, "test-cluster-key-0123456789abcdef").unwrap();
+        // Unique name and key per test cluster: tests run in parallel and a
+        // recycled port must never let one test's node join another cluster.
+        let tag = format!("{:016x}", rand::random::<u64>());
+        std::fs::write(&key_file, format!("test-cluster-key-{tag}")).unwrap();
         let mut nodes = Vec::new();
         let mut members = Vec::new();
         for id in 1..=n {
@@ -42,8 +45,9 @@ impl Cluster {
             members.push(format!("{id}=127.0.0.1:{raft}/127.0.0.1:{client}"));
             nodes.push(Node { id, client_port: client, data_dir: dir.path().join(format!("n{id}")), child: None });
         }
-        let mut c =
-            Cluster { _dir: dir, nodes, members: members.join(","), key_file, extra: extra.iter().map(|s| s.to_string()).collect() };
+        let mut extra: Vec<String> = extra.iter().map(|s| s.to_string()).collect();
+        extra.extend(["--cluster-name".into(), format!("test-{tag}"), "--repl-set-name".into(), "mango".into()]);
+        let mut c = Cluster { _dir: dir, nodes, members: members.join(","), key_file, extra };
         for i in 0..c.nodes.len() {
             c.start(i);
         }

@@ -15,6 +15,8 @@ RUN mkdir /data-template
 # ---- runtime ----
 # distroless: glibc + CA certs, no shell, runs as an unprivileged user.
 FROM gcr.io/distroless/cc-debian12:nonroot
+LABEL org.opencontainers.image.title="mango" \
+      org.opencontainers.image.description="🥭 A ripe, MongoDB-compatible document database with built-in Raft replication"
 COPY --from=build /src/target/release/mango /usr/local/bin/mango
 COPY --from=build --chown=65532:65532 /data-template /data
 ENV MANGO_DATA_DIR=/data \

@@ -1,4 +1,4 @@
-# A three-node Mango cluster on one machine, one node per simulated
+# 🥭 A three-tree Mango orchard on one machine: three nodes, one per simulated
 # availability zone. Good for development and for trying failover:
 #
 #   export MANGO_CLUSTER_KEY=$(openssl rand -hex 32)   # keep it; nodes must share it

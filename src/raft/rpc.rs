@@ -346,3 +346,40 @@ where
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn handshake(server: Security, client: Security, expect: u64) -> (std::io::Result<u64>, std::io::Result<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv = tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            accept_handshake(&mut s, &server).await
+        });
+        let mut c = TcpStream::connect(addr).await.unwrap();
+        let cr = connect_handshake(&mut c, &client, expect).await;
+        (srv.await.unwrap(), cr)
+    }
+
+    fn sec(cluster: &str, node: u64, key: &str) -> Security {
+        Security { cluster: cluster.into(), node, key: Some(Arc::new(key.as_bytes().to_vec())) }
+    }
+
+    #[tokio::test]
+    async fn peers_must_share_cluster_and_key() {
+        let (s, c) = handshake(sec("a", 1, "k-0123456789abcdef"), sec("a", 2, "k-0123456789abcdef"), 1).await;
+        assert_eq!(s.unwrap(), 2);
+        c.unwrap();
+        // Another cluster that happens to reuse the address and node id.
+        let (s, c) = handshake(sec("a", 1, "k-0123456789abcdef"), sec("b", 2, "k-0123456789abcdef"), 1).await;
+        assert!(s.is_err() && c.is_err());
+        // Wrong key.
+        let (s, c) = handshake(sec("a", 1, "k-0123456789abcdef"), sec("a", 2, "other-key-0123456789"), 1).await;
+        assert!(s.is_err() && c.is_err());
+        // Right cluster, but not the node we meant to reach.
+        let (_, c) = handshake(sec("a", 3, "k-0123456789abcdef"), sec("a", 2, "k-0123456789abcdef"), 1).await;
+        assert!(c.is_err());
+    }
+}

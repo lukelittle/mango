@@ -73,6 +73,15 @@ pub enum Role {
 }
 
 impl Role {
+    /// The orchard's name for each role, shown alongside the real one.
+    pub fn ripeness(&self) -> &'static str {
+        match self {
+            Role::Follower => "ripening",
+            Role::PreCandidate | Role::Candidate => "blossoming",
+            Role::Leader => "ripe",
+        }
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Role::Follower => "follower",
@@ -289,7 +298,7 @@ pub async fn start(cfg: RaftConfig, store: Arc<Store>) -> Result<RaftHandle> {
         && handle.cfg.members.len() > 1
     {
         let listener = tokio::net::TcpListener::bind(bind_addr(&me.raft_addr)).await?;
-        tracing::info!(addr = %me.raft_addr, "raft listener started");
+        tracing::info!(addr = %me.raft_addr, "🌳 raft listener started (the orchard is listening)");
         let h = handle.clone();
         tokio::spawn(async move {
             loop {
@@ -531,7 +540,7 @@ impl Node {
                         p.last_ack = Some(Instant::now());
                         p.snapshot_backoff = SNAPSHOT_BACKOFF_MIN;
                         p.snapshot_retry_at = None;
-                        tracing::info!(peer, last_index, "snapshot installed on peer");
+                        tracing::info!(peer, last_index, "🥭 snapshot installed on peer (sapling caught up)");
                     } else if !ok {
                         // Back off so an unreachable peer doesn't make us
                         // rebuild snapshots in a loop.
@@ -570,7 +579,7 @@ impl Node {
                     })
                     .count();
                 if alive < self.quorum() {
-                    tracing::warn!(term = self.log.term, alive, "leader lost contact with a majority; stepping down");
+                    tracing::warn!(term = self.log.term, alive, "🍂 leader lost contact with a majority; stepping down");
                     self.become_follower(self.log.term, None)?;
                 } else {
                     self.next_quorum_check = now + window;
@@ -613,7 +622,7 @@ impl Node {
         self.leader = None;
         self.votes = HashSet::from([self.cfg.id]);
         self.reset_election_timer();
-        tracing::info!(term, "starting election");
+        tracing::info!(term, "🌼 starting election (blossoming)");
         if self.votes.len() >= self.quorum() {
             return self.become_leader();
         }
@@ -632,7 +641,7 @@ impl Node {
     }
 
     fn become_leader(&mut self) -> Result<()> {
-        tracing::info!(term = self.log.term, "became leader");
+        tracing::info!(term = self.log.term, "🥭 became leader (ripe and ready for writes)");
         self.role = Role::Leader;
         self.leader = Some(self.cfg.id);
         let now = Instant::now();
@@ -656,7 +665,7 @@ impl Node {
             self.log.save_hard_state(&self.store, term, None)?;
         }
         if self.role == Role::Leader {
-            tracing::info!(term, "stepping down");
+            tracing::info!(term, "🍃 stepping down");
             for (_, (_, reply)) in std::mem::take(&mut self.pending) {
                 let _ = reply.send(Outcome::Lost);
             }
@@ -842,7 +851,7 @@ impl Node {
             return Ok(Response::Snapshot { term: t, ok: true });
         }
         let keep_suffix = self.log.term_at(&self.store, last_index)? == Some(last_term);
-        tracing::info!(last_index, last_term, keep_suffix, "installing snapshot from leader");
+        tracing::info!(last_index, last_term, keep_suffix, "🧺 installing snapshot from leader (grafting a fresh harvest)");
         // install() works in one write transaction: on error nothing is
         // committed, so the node can keep running and the leader will retry.
         let installed = snapshot::install(&self.store, &inc.path, last_index, last_term, keep_suffix);
@@ -1040,7 +1049,7 @@ impl Node {
         let leader = self.cfg.id;
         let dir = self.cfg.data_dir.join("snapshots");
         let timeout = self.cfg.rpc_timeout.max(Duration::from_secs(10));
-        tracing::info!(peer, "peer is behind the compacted log; sending a snapshot");
+        tracing::info!(peer, "🧺 peer is behind the compacted log; sending a snapshot");
         self.rt.spawn(async move {
             let path = dir.join(format!("send-{peer}-{}", rand::random::<u32>()));
             let p2 = path.clone();

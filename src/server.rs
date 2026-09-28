@@ -430,6 +430,7 @@ impl Server {
         doc! {
             "id": st.id as i64,
             "role": st.role.as_str(),
+            "ripeness": st.role.ripeness(),
             "term": st.term as i64,
             "leader": st.leader.map(|l| Bson::Int64(l as i64)).unwrap_or(Bson::Null),
             "commitIndex": st.commit_index as i64,
@@ -631,7 +632,7 @@ impl Server {
                     let doc = auth::user_doc("admin", &user, &pwd, Bson::Array(vec![Bson::Document(doc! {"role": "root", "db": "admin"})]));
                     match s.propose(Command::PutUser { key: format!("admin.{user}"), user: doc, create: true }, None).await {
                         Ok(_) => {
-                            tracing::info!(%user, "created root user");
+                            tracing::info!(%user, "🔑 created root user");
                             return;
                         }
                         Err(e) => tracing::debug!(error = %e, "root user bootstrap will retry"),
@@ -686,7 +687,7 @@ pub fn build_info() -> Document {
         "debug": false,
         "maxBsonObjectSize": MAX_BSON_SIZE,
         "storageEngines": ["mango"],
-        "mango": {"version": env!("CARGO_PKG_VERSION")},
+        "mango": {"version": env!("CARGO_PKG_VERSION"), "flavor": "alphonso", "emoji": "🥭"},
         "ok": 1.0
     }
 }

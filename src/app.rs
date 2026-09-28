@@ -102,6 +102,6 @@ pub async fn start(cfg: Config) -> Result<Running> {
     };
     let server = Server::new(store, raft.clone(), scfg);
     tokio::spawn(server.clone().serve(listener));
-    tracing::info!(%addr, node = cfg.node_id, "mango is accepting connections");
+    tracing::info!(%addr, node = cfg.node_id, "🥭 mango is accepting connections");
     Ok(Running { addr, server, raft })
 }
