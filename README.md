@@ -156,4 +156,3 @@ MANGO_CHAOS_ROUNDS=25 cargo test --test cluster chaos -- --nocapture
 python tests/compat/pymongo_smoke.py "mongodb://127.0.0.1:27017/?directConnection=true"
 ```
 
-Licensed under Apache-2.0.
