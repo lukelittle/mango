@@ -18,20 +18,64 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Command {
     Noop,
-    Insert { ns: String, docs: Vec<Document>, ordered: bool },
-    Update { ns: String, updates: Vec<Document>, ordered: bool, upsert_ids: Vec<ObjectId> },
-    Delete { ns: String, deletes: Vec<Document>, ordered: bool },
-    FindAndModify { ns: String, spec: Document, upsert_id: ObjectId },
-    Create { ns: String, options: Document },
-    Drop { ns: String },
-    DropDatabase { db: String },
-    CreateIndexes { ns: String, indexes: Vec<Document> },
-    DropIndexes { ns: String, index: Bson },
-    Rename { from: String, to: String, drop_target: bool },
-    PutUser { key: String, user: Document, create: bool },
-    DropUser { key: String },
+    Insert {
+        ns: String,
+        docs: Vec<Document>,
+        ordered: bool,
+    },
+    Update {
+        ns: String,
+        updates: Vec<Document>,
+        ordered: bool,
+        upsert_ids: Vec<ObjectId>,
+    },
+    Delete {
+        ns: String,
+        deletes: Vec<Document>,
+        ordered: bool,
+    },
+    FindAndModify {
+        ns: String,
+        spec: Document,
+        upsert_id: ObjectId,
+    },
+    Create {
+        ns: String,
+        options: Document,
+    },
+    Drop {
+        ns: String,
+    },
+    DropDatabase {
+        db: String,
+    },
+    CreateIndexes {
+        ns: String,
+        indexes: Vec<Document>,
+    },
+    DropIndexes {
+        ns: String,
+        index: Bson,
+    },
+    Rename {
+        from: String,
+        to: String,
+        drop_target: bool,
+    },
+    PutUser {
+        key: String,
+        user: Document,
+        create: bool,
+    },
+    DropUser {
+        key: String,
+    },
     /// Deletes documents whose TTL index field is older than `cutoff_millis`.
-    Expire { ns: String, field: String, cutoff_millis: i64 },
+    Expire {
+        ns: String,
+        field: String,
+        cutoff_millis: i64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -92,7 +136,7 @@ pub fn apply(txn: &WriteTransaction, p: &Proposal, index: u64) -> Result<std::re
             }
         }
     }
-    if index % 1024 == 0 {
+    if index.is_multiple_of(1024) {
         prune_sessions(txn, p.now_millis)?;
     }
     let result = apply_cmd(txn, p)?;
@@ -375,7 +419,7 @@ fn find_and_modify(txn: &WriteTransaction, ns: &str, spec: &Document, upsert_id:
     }
     let target = found.into_iter().next();
     let reply = match (target, remove) {
-        (None, _) if !(upsert && !remove) => doc! {"lastErrorObject": {"n": 0, "updatedExisting": false}, "value": Bson::Null, "ok": 1.0},
+        (None, _) if !upsert || remove => doc! {"lastErrorObject": {"n": 0, "updatedExisting": false}, "value": Bson::Null, "ok": 1.0},
         (None, _) => {
             let u = update.unwrap();
             let ctx = UpdateCtx { is_insert: true, now_millis: now, query: Some(&m), array_filters: &filters };
@@ -414,7 +458,14 @@ fn create(txn: &WriteTransaction, ns: &str, options: &Document) -> Result<Docume
     for (k, v) in options {
         match k.as_str() {
             "capped" if crate::bsonutil::truthy(v) => return Err(Error::not_implemented("capped collections are not supported by Mango")),
-            "timeseries" | "clusteredIndex" | "viewOn" | "pipeline" | "validator" | "collation" | "encryptedFields" | "changeStreamPreAndPostImages" => {
+            "timeseries"
+            | "clusteredIndex"
+            | "viewOn"
+            | "pipeline"
+            | "validator"
+            | "collation"
+            | "encryptedFields"
+            | "changeStreamPreAndPostImages" => {
                 return Err(Error::not_implemented(format!("collection option '{k}' is not supported by Mango")));
             }
             _ => {}
@@ -501,10 +552,7 @@ fn create_indexes(txn: &WriteTransaction, ns: &str, specs: &[Document]) -> Resul
             )));
         }
         if let Some(existing) = coll.meta.indexes.iter().find(|e| e.key == ix.key && e.partial == ix.partial) {
-            return Err(Error::index_options_conflict(format!(
-                "Index already exists with a different name: {}",
-                existing.name
-            )));
+            return Err(Error::index_options_conflict(format!("Index already exists with a different name: {}", existing.name)));
         }
         ix.id = coll.meta.next_index_id;
         coll.meta.next_index_id += 1;
@@ -575,7 +623,7 @@ fn rename(txn: &WriteTransaction, from: &str, to: &str, drop_target: bool) -> Re
     };
     if let Some(target) = WriteColl::open(txn, to)? {
         if !drop_target {
-            return Err(Error::namespace_exists(format!("target namespace exists")));
+            return Err(Error::namespace_exists("target namespace exists".to_string()));
         }
         target.drop(txn)?;
     }
@@ -635,14 +683,25 @@ mod tests {
     fn crud_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::open(&dir.path().join("t.redb")).unwrap();
-        let r = run(&s, Command::Insert { ns: "d.c".into(), docs: vec![doc! {"_id": 1, "a": 1}, doc! {"_id": 1}, doc! {"_id": 2, "a": 2}], ordered: false }).unwrap();
+        let r = run(
+            &s,
+            Command::Insert {
+                ns: "d.c".into(),
+                docs: vec![doc! {"_id": 1, "a": 1}, doc! {"_id": 1}, doc! {"_id": 2, "a": 2}],
+                ordered: false,
+            },
+        )
+        .unwrap();
         assert_eq!(r.get_i32("n").unwrap(), 2);
         assert_eq!(r.get_array("writeErrors").unwrap().len(), 1);
         let r = run(
             &s,
             Command::Update {
                 ns: "d.c".into(),
-                updates: vec![doc! {"q": {}, "u": {"$inc": {"a": 10}}, "multi": true}, doc! {"q": {"_id": 9}, "u": {"$set": {"x": 1}}, "upsert": true}],
+                updates: vec![
+                    doc! {"q": {}, "u": {"$inc": {"a": 10}}, "multi": true},
+                    doc! {"q": {"_id": 9}, "u": {"$set": {"x": 1}}, "upsert": true},
+                ],
                 ordered: true,
                 upsert_ids: vec![ObjectId::new(), ObjectId::new()],
             },
@@ -651,15 +710,21 @@ mod tests {
         assert_eq!(r.get_i32("n").unwrap(), 3);
         assert_eq!(r.get_i32("nModified").unwrap(), 2);
         assert_eq!(r.get_array("upserted").unwrap()[0].as_document().unwrap().get_i32("_id").unwrap(), 9);
-        let r = run(&s, Command::Delete { ns: "d.c".into(), deletes: vec![doc! {"q": {"a": {"$gt": 11}}, "limit": 0}], ordered: true }).unwrap();
+        let r = run(&s, Command::Delete { ns: "d.c".into(), deletes: vec![doc! {"q": {"a": {"$gt": 11}}, "limit": 0}], ordered: true })
+            .unwrap();
         assert_eq!(r.get_i32("n").unwrap(), 1);
         let r = run(
             &s,
-            Command::FindAndModify { ns: "d.c".into(), spec: doc! {"query": {"_id": 1}, "update": {"$set": {"z": 1}}, "new": true}, upsert_id: ObjectId::new() },
+            Command::FindAndModify {
+                ns: "d.c".into(),
+                spec: doc! {"query": {"_id": 1}, "update": {"$set": {"z": 1}}, "new": true},
+                upsert_id: ObjectId::new(),
+            },
         )
         .unwrap();
         assert_eq!(r.get_document("value").unwrap(), &doc! {"_id": 1, "a": 11, "z": 1});
-        let r = run(&s, Command::CreateIndexes { ns: "d.c".into(), indexes: vec![doc! {"key": {"z": 1}, "name": "z_1", "unique": true}] }).unwrap();
+        let r = run(&s, Command::CreateIndexes { ns: "d.c".into(), indexes: vec![doc! {"key": {"z": 1}, "name": "z_1", "unique": true}] })
+            .unwrap();
         assert_eq!(r.get_i32("numIndexesAfter").unwrap(), 2);
         let e = run(&s, Command::Insert { ns: "d.c".into(), docs: vec![doc! {"_id": 5, "z": 1}], ordered: true }).unwrap();
         assert_eq!(e.get_array("writeErrors").unwrap()[0].as_document().unwrap().get_i32("code").unwrap(), 11000);
@@ -675,7 +740,12 @@ mod tests {
         let s = Store::open(&dir.path().join("t.redb")).unwrap();
         let session = Some(SessionTxn { lsid: Bson::Document(doc! {"id": "abc"}), txn_number: 1 });
         let p = Proposal {
-            cmd: Command::Update { ns: "d.c".into(), updates: vec![doc! {"q": {"_id": 1}, "u": {"$inc": {"n": 1}}, "upsert": true}], ordered: true, upsert_ids: vec![ObjectId::new()] },
+            cmd: Command::Update {
+                ns: "d.c".into(),
+                updates: vec![doc! {"q": {"_id": 1}, "u": {"$inc": {"n": 1}}, "upsert": true}],
+                ordered: true,
+                upsert_ids: vec![ObjectId::new()],
+            },
             now_millis: 0,
             session,
         };

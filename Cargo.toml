@@ -24,4 +24,9 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 [dev-dependencies]
 futures-util = "0.3.34"
 mongodb = "3.9.1"
+rand = "0.10"
 tempfile = "3.27.0"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4

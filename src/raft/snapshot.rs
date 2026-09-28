@@ -67,7 +67,10 @@ pub fn create(store: &Store, path: &Path) -> Result<(u64, u64)> {
     Ok((last_index, last_term))
 }
 
-fn read_chunk(r: &mut impl Read) -> std::io::Result<Option<(u8, Vec<u8>, Vec<u8>)>> {
+/// One snapshot record: (table tag, key, value).
+type Record = (u8, Vec<u8>, Vec<u8>);
+
+fn read_chunk(r: &mut impl Read) -> std::io::Result<Option<Record>> {
     let mut tag = [0u8; 1];
     match r.read_exact(&mut tag) {
         Ok(()) => {}

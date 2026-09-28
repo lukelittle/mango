@@ -22,9 +22,22 @@ pub enum Expr {
     Cond(Box<Expr>, Box<Expr>, Box<Expr>),
     Switch(Vec<(Expr, Expr)>, Option<Box<Expr>>),
     Let(Vec<(String, Expr)>, Box<Expr>),
-    Map { input: Box<Expr>, var: String, body: Box<Expr> },
-    Filter { input: Box<Expr>, var: String, cond: Box<Expr>, limit: Option<Box<Expr>> },
-    Reduce { input: Box<Expr>, init: Box<Expr>, body: Box<Expr> },
+    Map {
+        input: Box<Expr>,
+        var: String,
+        body: Box<Expr>,
+    },
+    Filter {
+        input: Box<Expr>,
+        var: String,
+        cond: Box<Expr>,
+        limit: Option<Box<Expr>>,
+    },
+    Reduce {
+        input: Box<Expr>,
+        init: Box<Expr>,
+        body: Box<Expr>,
+    },
     /// Operators taking named arguments, e.g. `$trim: {input, chars}`.
     Named(String, Vec<(String, Expr)>),
 }
@@ -185,11 +198,9 @@ impl Expr {
         Ok(match op {
             "$literal" => Expr::Literal(arg.clone()),
             "$cond" => match arg {
-                Bson::Array(a) if a.len() == 3 => Expr::Cond(
-                    Box::new(Expr::parse(&a[0])?),
-                    Box::new(Expr::parse(&a[1])?),
-                    Box::new(Expr::parse(&a[2])?),
-                ),
+                Bson::Array(a) if a.len() == 3 => {
+                    Expr::Cond(Box::new(Expr::parse(&a[0])?), Box::new(Expr::parse(&a[1])?), Box::new(Expr::parse(&a[2])?))
+                }
                 Bson::Document(d) => Expr::Cond(get(d, "if")?, get(d, "then")?, get(d, "else")?),
                 _ => return Err(Error::failed_to_parse("$cond requires 3 arguments")),
             },
@@ -230,9 +241,7 @@ impl Expr {
                 Expr::Reduce { input: get(d, "input")?, init: get(d, "initialValue")?, body: get(d, "in")? }
             }
             op if NAMED_OPS.contains(&op) => Expr::Named(op.to_string(), named(arg)?),
-            op if KNOWN_OPS.contains(&op) => {
-                Expr::Op(op.to_string(), args_of(arg).into_iter().map(Expr::parse).collect::<Result<_>>()?)
-            }
+            op if KNOWN_OPS.contains(&op) => Expr::Op(op.to_string(), args_of(arg).into_iter().map(Expr::parse).collect::<Result<_>>()?),
             op => return Err(Error::invalid_options(format!("Unrecognized expression '{op}'"))),
         })
     }
@@ -312,9 +321,10 @@ impl Expr {
                 let limit = match limit {
                     Some(l) => match l.eval(vars)? {
                         Bson::Null => None,
-                        v => Some(as_i64(&v).filter(|n| *n > 0).ok_or_else(|| {
-                            Error::bad_value("$filter: limit must be a positive integer")
-                        })? as usize),
+                        v => Some(
+                            as_i64(&v).filter(|n| *n > 0).ok_or_else(|| Error::bad_value("$filter: limit must be a positive integer"))?
+                                as usize,
+                        ),
                     },
                     None => None,
                 };
@@ -394,24 +404,98 @@ impl Expr {
 }
 
 const KNOWN_OPS: &[&str] = &[
-    "$add", "$subtract", "$multiply", "$divide", "$mod", "$abs", "$ceil", "$floor", "$round", "$trunc", "$pow",
-    "$sqrt", "$exp", "$ln", "$log", "$log10", "$eq", "$ne", "$gt", "$gte", "$lt", "$lte", "$cmp", "$and", "$or",
-    "$not", "$concat", "$toLower", "$toUpper", "$substr", "$substrBytes", "$substrCP", "$strLenBytes", "$strLenCP",
-    "$split", "$indexOfBytes", "$indexOfCP", "$strcasecmp", "$size", "$arrayElemAt", "$first", "$last",
-    "$concatArrays", "$in", "$indexOfArray", "$isArray", "$reverseArray", "$slice", "$range", "$setUnion",
-    "$setIntersection", "$setDifference", "$setEquals", "$setIsSubset", "$allElementsTrue", "$anyElementTrue",
-    "$mergeObjects", "$objectToArray", "$arrayToObject", "$type", "$toString", "$toInt", "$toLong", "$toDouble",
-    "$toBool", "$toObjectId", "$toDate", "$isNumber", "$year", "$month", "$dayOfMonth", "$hour", "$minute",
-    "$second", "$millisecond", "$dayOfWeek", "$dayOfYear", "$isoDayOfWeek", "$sum", "$avg", "$min", "$max",
-    "$ifNull", "$rand", "$toHashedIndexKey", "$zip", "$sortArray",
+    "$add",
+    "$subtract",
+    "$multiply",
+    "$divide",
+    "$mod",
+    "$abs",
+    "$ceil",
+    "$floor",
+    "$round",
+    "$trunc",
+    "$pow",
+    "$sqrt",
+    "$exp",
+    "$ln",
+    "$log",
+    "$log10",
+    "$eq",
+    "$ne",
+    "$gt",
+    "$gte",
+    "$lt",
+    "$lte",
+    "$cmp",
+    "$and",
+    "$or",
+    "$not",
+    "$concat",
+    "$toLower",
+    "$toUpper",
+    "$substr",
+    "$substrBytes",
+    "$substrCP",
+    "$strLenBytes",
+    "$strLenCP",
+    "$split",
+    "$indexOfBytes",
+    "$indexOfCP",
+    "$strcasecmp",
+    "$size",
+    "$arrayElemAt",
+    "$first",
+    "$last",
+    "$concatArrays",
+    "$in",
+    "$indexOfArray",
+    "$isArray",
+    "$reverseArray",
+    "$slice",
+    "$range",
+    "$setUnion",
+    "$setIntersection",
+    "$setDifference",
+    "$setEquals",
+    "$setIsSubset",
+    "$allElementsTrue",
+    "$anyElementTrue",
+    "$mergeObjects",
+    "$objectToArray",
+    "$arrayToObject",
+    "$type",
+    "$toString",
+    "$toInt",
+    "$toLong",
+    "$toDouble",
+    "$toBool",
+    "$toObjectId",
+    "$toDate",
+    "$isNumber",
+    "$year",
+    "$month",
+    "$dayOfMonth",
+    "$hour",
+    "$minute",
+    "$second",
+    "$millisecond",
+    "$dayOfWeek",
+    "$dayOfYear",
+    "$isoDayOfWeek",
+    "$sum",
+    "$avg",
+    "$min",
+    "$max",
+    "$ifNull",
+    "$rand",
+    "$toHashedIndexKey",
+    "$zip",
+    "$sortArray",
 ];
 
 fn arity(op: &str, vals: &[Bson], n: usize) -> Result<()> {
     if vals.len() != n {
-        return Err(Error::failed_to_parse(format!(
-            "Expression {op} takes exactly {n} arguments. {} were passed in.",
-            vals.len()
-        )));
+        return Err(Error::failed_to_parse(format!("Expression {op} takes exactly {n} arguments. {} were passed in.", vals.len())));
     }
     Ok(())
 }
@@ -673,9 +757,10 @@ fn convert(v: &Bson, to: &str) -> Result<Bson> {
                 }
             };
             if to == "int" {
-                Bson::Int32(i32::try_from(i).map_err(|_| {
-                    Error::failed_to_parse(format!("Conversion would overflow target type in $convert with {i}"))
-                })?)
+                Bson::Int32(
+                    i32::try_from(i)
+                        .map_err(|_| Error::failed_to_parse(format!("Conversion would overflow target type in $convert with {i}")))?,
+                )
             } else {
                 Bson::Int64(i)
             }
@@ -700,11 +785,8 @@ fn named_arg<'e>(args: &'e [(String, Expr)], k: &str) -> Option<&'e Expr> {
 }
 
 fn eval_named(op: &str, args: &[(String, Expr)], vars: &Vars) -> Result<Option<Bson>> {
-    let req = |k: &str| -> Result<Bson> {
-        named_arg(args, k)
-            .ok_or_else(|| Error::failed_to_parse(format!("{op} requires '{k}'")))?
-            .eval(vars)
-    };
+    let req =
+        |k: &str| -> Result<Bson> { named_arg(args, k).ok_or_else(|| Error::failed_to_parse(format!("{op} requires '{k}'")))?.eval(vars) };
     let opt = |k: &str| -> Result<Option<Bson>> { named_arg(args, k).map(|e| e.eval(vars)).transpose() };
     Ok(Some(match op {
         "$trim" | "$ltrim" | "$rtrim" => {
@@ -748,11 +830,8 @@ fn eval_named(op: &str, args: &[(String, Expr)], vars: &Vars) -> Result<Option<B
                             Some(c) => {
                                 let m = c.get(0).unwrap();
                                 let idx = s[..m.start()].chars().count() as i32;
-                                let caps: Vec<Bson> = c
-                                    .iter()
-                                    .skip(1)
-                                    .map(|g| g.map(|g| Bson::String(g.as_str().into())).unwrap_or(Bson::Null))
-                                    .collect();
+                                let caps: Vec<Bson> =
+                                    c.iter().skip(1).map(|g| g.map(|g| Bson::String(g.as_str().into())).unwrap_or(Bson::Null)).collect();
                                 Bson::Document(bson::doc! {"match": m.as_str(), "idx": idx, "captures": caps})
                             }
                         }
@@ -793,7 +872,12 @@ fn eval_named(op: &str, args: &[(String, Expr)], vars: &Vars) -> Result<Option<B
             match opt("format")? {
                 Some(Bson::String(f)) => Bson::String(format_date(&f, ms)?),
                 None => Bson::String(format_date_iso(ms)),
-                Some(v) => return Err(Error::type_mismatch(format!("$dateToString requires that 'format' be a string, found: {}", type_name(&v)))),
+                Some(v) => {
+                    return Err(Error::type_mismatch(format!(
+                        "$dateToString requires that 'format' be a string, found: {}",
+                        type_name(&v)
+                    )));
+                }
             }
         }
         "$dateFromParts" => {
@@ -810,15 +894,16 @@ fn eval_named(op: &str, args: &[(String, Expr)], vars: &Vars) -> Result<Option<B
             let total_months = year * 12 + (month - 1);
             let (y, m) = (total_months.div_euclid(12), (total_months.rem_euclid(12) + 1) as u32);
             let days = days_from_civil(y, m, 1) + day - 1;
-            let ms = days * 86_400_000 + num("hour", 0)? * 3_600_000 + num("minute", 0)? * 60_000
+            let ms = days * 86_400_000
+                + num("hour", 0)? * 3_600_000
+                + num("minute", 0)? * 60_000
                 + num("second", 0)? * 1000
                 + num("millisecond", 0)?;
             Bson::DateTime(DateTime::from_millis(ms))
         }
         "$convert" => {
-            let input = named_arg(args, "input")
-                .ok_or_else(|| Error::failed_to_parse("Missing 'input' parameter to $convert"))?
-                .eval_opt(vars)?;
+            let input =
+                named_arg(args, "input").ok_or_else(|| Error::failed_to_parse("Missing 'input' parameter to $convert"))?.eval_opt(vars)?;
             let to = match req("to")? {
                 Bson::String(s) => s,
                 v => match as_i64(&v) {
@@ -918,11 +1003,7 @@ fn eval_op(op: &str, mut vals: Vec<Bson>) -> Result<Bson> {
                 }
                 (a, b) if is_number(a) && is_number(b) => num_sub(a, b).unwrap(),
                 (a, b) => {
-                    return Err(Error::type_mismatch(format!(
-                        "can't $subtract {} from {}",
-                        type_name(b),
-                        type_name(a)
-                    )));
+                    return Err(Error::type_mismatch(format!("can't $subtract {} from {}", type_name(b), type_name(a))));
                 }
             }
         }
@@ -962,11 +1043,7 @@ fn eval_op(op: &str, mut vals: Vec<Bson>) -> Result<Bson> {
                         return Err(Error::bad_value("can't $mod by zero"));
                     }
                     let r = a.wrapping_rem(b);
-                    if matches!((&vals[0], &vals[1]), (Bson::Int32(_), Bson::Int32(_))) {
-                        Bson::Int32(r as i32)
-                    } else {
-                        Bson::Int64(r)
-                    }
+                    if matches!((&vals[0], &vals[1]), (Bson::Int32(_), Bson::Int32(_))) { Bson::Int32(r as i32) } else { Bson::Int64(r) }
                 }
                 _ => {
                     let (a, b) = (need_num(op, &vals[0])?, need_num(op, &vals[1])?);
@@ -1019,9 +1096,10 @@ fn eval_op(op: &str, mut vals: Vec<Bson>) -> Result<Bson> {
             }
             let place = match vals.get(1) {
                 None => 0,
-                Some(p) => as_i64(p).filter(|p| (-20..100).contains(p)).ok_or_else(|| {
-                    Error::bad_value(format!("{op} place must be an integer between -20 and 100"))
-                })? as i32,
+                Some(p) => as_i64(p)
+                    .filter(|p| (-20..100).contains(p))
+                    .ok_or_else(|| Error::bad_value(format!("{op} place must be an integer between -20 and 100")))?
+                    as i32,
             };
             let v = &vals[0];
             if is_nullish(v) {
@@ -1216,7 +1294,12 @@ fn eval_op(op: &str, mut vals: Vec<Bson>) -> Result<Bson> {
             arity(op, &vals, 1)?;
             match &vals[0] {
                 Bson::Array(a) => Bson::Int32(a.len() as i32),
-                v => return Err(Error::type_mismatch(format!("The argument to $size must be an array. Type of argument: {}", type_name(v)))),
+                v => {
+                    return Err(Error::type_mismatch(format!(
+                        "The argument to $size must be an array. Type of argument: {}",
+                        type_name(v)
+                    )));
+                }
             }
         }
         "$arrayElemAt" => {
@@ -1400,7 +1483,12 @@ fn eval_op(op: &str, mut vals: Vec<Bson>) -> Result<Bson> {
                         }
                     }
                     v if is_nullish(&v) => {}
-                    v => return Err(Error::type_mismatch(format!("$mergeObjects requires object inputs, but input is of type {}", type_name(&v)))),
+                    v => {
+                        return Err(Error::type_mismatch(format!(
+                            "$mergeObjects requires object inputs, but input is of type {}",
+                            type_name(&v)
+                        )));
+                    }
                 }
             }
             Bson::Document(out)
@@ -1458,8 +1546,8 @@ fn eval_op(op: &str, mut vals: Vec<Bson>) -> Result<Bson> {
             };
             convert(&vals[0], to)?
         }
-        "$year" | "$month" | "$dayOfMonth" | "$hour" | "$minute" | "$second" | "$millisecond" | "$dayOfWeek"
-        | "$dayOfYear" | "$isoDayOfWeek" => {
+        "$year" | "$month" | "$dayOfMonth" | "$hour" | "$minute" | "$second" | "$millisecond" | "$dayOfWeek" | "$dayOfYear"
+        | "$isoDayOfWeek" => {
             arity(op, &vals, 1)?;
             if is_nullish(&vals[0]) {
                 return Ok(Bson::Null);
@@ -1474,7 +1562,13 @@ fn eval_op(op: &str, mut vals: Vec<Bson>) -> Result<Bson> {
                 "$second" => p.second as i32,
                 "$millisecond" => p.millis as i32,
                 "$dayOfWeek" => p.day_of_week as i32,
-                "$isoDayOfWeek" => if p.day_of_week == 1 { 7 } else { p.day_of_week as i32 - 1 },
+                "$isoDayOfWeek" => {
+                    if p.day_of_week == 1 {
+                        7
+                    } else {
+                        p.day_of_week as i32 - 1
+                    }
+                }
                 _ => p.day_of_year as i32,
             })
         }
@@ -1499,11 +1593,7 @@ fn eval_op(op: &str, mut vals: Vec<Bson>) -> Result<Bson> {
                 }
                 "$avg" => {
                     let nums: Vec<f64> = items.iter().filter_map(|v| if is_number(v) { as_f64(v) } else { None }).collect();
-                    if nums.is_empty() {
-                        Bson::Null
-                    } else {
-                        Bson::Double(nums.iter().sum::<f64>() / nums.len() as f64)
-                    }
+                    if nums.is_empty() { Bson::Null } else { Bson::Double(nums.iter().sum::<f64>() / nums.len() as f64) }
                 }
                 _ => {
                     let mut best: Option<Bson> = None;
@@ -1512,11 +1602,7 @@ fn eval_op(op: &str, mut vals: Vec<Bson>) -> Result<Bson> {
                             None => v,
                             Some(b) => {
                                 let ord = compare(&v, &b);
-                                if (op == "$min" && ord == Ordering::Less) || (op == "$max" && ord == Ordering::Greater) {
-                                    v
-                                } else {
-                                    b
-                                }
+                                if (op == "$min" && ord == Ordering::Less) || (op == "$max" && ord == Ordering::Greater) { v } else { b }
                             }
                         });
                     }

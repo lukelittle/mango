@@ -18,11 +18,25 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{Mutex, mpsc, oneshot};
 
 pub const MAX_FRAME: usize = 64 * 1024 * 1024;
+const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Request {
-    Vote { term: u64, candidate: u64, last_index: u64, last_term: u64, pre_vote: bool },
-    Append { term: u64, leader: u64, prev_index: u64, prev_term: u64, entries: Vec<Entry>, commit: u64 },
+    Vote {
+        term: u64,
+        candidate: u64,
+        last_index: u64,
+        last_term: u64,
+        pre_vote: bool,
+    },
+    Append {
+        term: u64,
+        leader: u64,
+        prev_index: u64,
+        prev_term: u64,
+        entries: Vec<Entry>,
+        commit: u64,
+    },
     Snapshot {
         term: u64,
         leader: u64,
@@ -75,7 +89,9 @@ enum Handshake {
         #[serde(with = "serde_bytes")]
         mac: Vec<u8>,
     },
-    Reject { reason: String },
+    Reject {
+        reason: String,
+    },
 }
 
 pub async fn write_msg<T: Serialize>(w: &mut (impl AsyncWriteExt + Unpin), msg: &T) -> std::io::Result<()> {
@@ -139,9 +155,8 @@ fn nonce() -> Vec<u8> {
 pub async fn accept_handshake(stream: &mut TcpStream, sec: &Security) -> std::io::Result<u64> {
     let server_nonce = nonce();
     write_msg(stream, &Handshake::Hello { cluster: sec.cluster.clone(), node: sec.node, nonce: server_nonce.clone() }).await?;
-    let msg: Handshake = tokio::time::timeout(Duration::from_secs(5), read_msg(stream))
-        .await
-        .map_err(|_| std::io::Error::other("handshake timeout"))??;
+    let msg: Handshake =
+        tokio::time::timeout(Duration::from_secs(5), read_msg(stream)).await.map_err(|_| std::io::Error::other("handshake timeout"))??;
     let Handshake::Auth { cluster, node, mac, nonce: client_nonce } = msg else {
         return Err(std::io::Error::other("expected Auth"));
     };
@@ -172,7 +187,12 @@ pub async fn connect_handshake(stream: &mut TcpStream, sec: &Security, expect_no
     let client_nonce = nonce();
     write_msg(
         stream,
-        &Handshake::Auth { cluster: sec.cluster.clone(), node: sec.node, mac: sec.mac("client", &server_nonce, sec.node), nonce: client_nonce.clone() },
+        &Handshake::Auth {
+            cluster: sec.cluster.clone(),
+            node: sec.node,
+            mac: sec.mac("client", &server_nonce, sec.node),
+            nonce: client_nonce.clone(),
+        },
     )
     .await?;
     match read_msg::<Handshake>(stream).await? {
@@ -220,6 +240,9 @@ async fn peer_task(addr: String, peer_id: u64, sec: Security, mut rx: mpsc::Unbo
     let mut next_id = 1u64;
     let mut backoff_until = tokio::time::Instant::now();
     while let Some((req, reply)) = rx.recv().await {
+        if reply.is_closed() {
+            continue; // the caller already timed out
+        }
         if !alive.load(Ordering::SeqCst) {
             writer = None;
         }
@@ -248,7 +271,12 @@ async fn peer_task(addr: String, peer_id: u64, sec: Security, mut rx: mpsc::Unbo
         next_id += 1;
         pending.lock().await.insert(id, reply);
         let w = writer.as_mut().unwrap();
-        if let Err(e) = write_msg(w, &Frame { id, msg: req }).await {
+        // A peer behind a blackholed link can stop draining its socket; don't
+        // let one write block this connection forever.
+        let written = tokio::time::timeout(WRITE_TIMEOUT, write_msg(w, &Frame { id, msg: req }))
+            .await
+            .unwrap_or_else(|_| Err(std::io::Error::other("write timed out")));
+        if let Err(e) = written {
             tracing::debug!(peer = peer_id, error = %e, "peer write failed");
             writer = None;
             alive.store(false, Ordering::SeqCst);

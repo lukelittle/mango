@@ -73,8 +73,7 @@ impl CompiledRegex {
             }
         }
         let full = if flags.is_empty() { pattern.to_string() } else { format!("(?{flags}){pattern}") };
-        let re = regex::Regex::new(&full)
-            .map_err(|e| Error::bad_value(format!("Regular expression is invalid: {e}")))?;
+        let re = regex::Regex::new(&full).map_err(|e| Error::bad_value(format!("Regular expression is invalid: {e}")))?;
         Ok(CompiledRegex { pattern: pattern.to_string(), options: options.to_string(), re })
     }
 
@@ -255,11 +254,7 @@ fn parse_top(key: &str, value: &Bson) -> Result<Option<Matcher>> {
                 return Err(Error::bad_value(format!("invalid field path in query: '{path}'")));
             }
             let pred = parse_field_value(value)?;
-            Ok(Some(Matcher::Field {
-                path: path.to_string(),
-                parts: path.split('.').map(String::from).collect(),
-                pred,
-            }))
+            Ok(Some(Matcher::Field { path: path.to_string(), parts: path.split('.').map(String::from).collect(), pred }))
         }
     }
 }
@@ -272,9 +267,7 @@ fn is_operator_doc(d: &Document) -> bool {
 pub fn parse_field_value(value: &Bson) -> Result<Pred> {
     match value {
         Bson::Document(d) if is_operator_doc(d) => parse_operators(d),
-        Bson::RegularExpression(r) => {
-            Ok(Pred::Regex(Box::new(CompiledRegex::new(r.pattern.as_str(), r.options.as_str())?)))
-        }
+        Bson::RegularExpression(r) => Ok(Pred::Regex(Box::new(CompiledRegex::new(r.pattern.as_str(), r.options.as_str())?))),
         v => Ok(Pred::Eq(v.clone())),
     }
 }
@@ -308,11 +301,7 @@ fn parse_operators(d: &Document) -> Result<Pred> {
                     if f.fract() != 0.0 {
                         return Err(Error::bad_value("$size must be a whole number"));
                     }
-                    if f < 0.0 {
-                        Pred::Never
-                    } else {
-                        Pred::Size(f as usize)
-                    }
+                    if f < 0.0 { Pred::Never } else { Pred::Size(f as usize) }
                 }
                 _ => return Err(Error::bad_value("$size needs a number")),
             },
@@ -326,9 +315,7 @@ fn parse_operators(d: &Document) -> Result<Pred> {
                     let mut ps = Vec::new();
                     for it in items {
                         ps.push(match it {
-                            Bson::Document(sub) if sub.keys().next().is_some_and(|k| k == "$elemMatch") => {
-                                parse_operators(sub)?
-                            }
+                            Bson::Document(sub) if sub.keys().next().is_some_and(|k| k == "$elemMatch") => parse_operators(sub)?,
                             Bson::RegularExpression(r) => {
                                 Pred::Regex(Box::new(CompiledRegex::new(r.pattern.as_str(), r.options.as_str())?))
                             }
@@ -342,8 +329,8 @@ fn parse_operators(d: &Document) -> Result<Pred> {
                 let Bson::Document(sub) = arg else {
                     return Err(Error::bad_value("$elemMatch needs an Object"));
                 };
-                let value_form = !sub.is_empty()
-                    && sub.keys().all(|k| k.starts_with('$') && !matches!(k.as_str(), "$and" | "$or" | "$nor" | "$expr"));
+                let value_form =
+                    !sub.is_empty() && sub.keys().all(|k| k.starts_with('$') && !matches!(k.as_str(), "$and" | "$or" | "$nor" | "$expr"));
                 if value_form {
                     match parse_operators(sub)? {
                         Pred::AllOf(ps) => Pred::ElemMatchValue(ps),
@@ -392,10 +379,9 @@ fn parse_operators(d: &Document) -> Result<Pred> {
             "$options" => continue,
             "$not" => match arg {
                 Bson::Document(sub) if is_operator_doc(sub) => Pred::Not(Box::new(parse_operators(sub)?)),
-                Bson::RegularExpression(r) => Pred::Not(Box::new(Pred::Regex(Box::new(CompiledRegex::new(
-                    r.pattern.as_str(),
-                    r.options.as_str(),
-                )?)))),
+                Bson::RegularExpression(r) => {
+                    Pred::Not(Box::new(Pred::Regex(Box::new(CompiledRegex::new(r.pattern.as_str(), r.options.as_str())?))))
+                }
                 _ => return Err(Error::bad_value("$not needs a regex or a document")),
             },
             "$comment" => continue,
@@ -553,10 +539,7 @@ impl Pred {
             }
             _ => cands.iter().any(|c| match c {
                 None => self.matches_missing(),
-                Some(v) => {
-                    self.matches_value(v)
-                        || matches!(v, Bson::Array(a) if a.iter().any(|e| self.matches_value(e)))
-                }
+                Some(v) => self.matches_value(v) || matches!(v, Bson::Array(a) if a.iter().any(|e| self.matches_value(e))),
             }),
         })
     }

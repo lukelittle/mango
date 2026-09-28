@@ -164,9 +164,7 @@ pub fn prepare_for_storage(mut doc: Document) -> Result<Document> {
     }
     for k in doc.keys() {
         if k.starts_with('$') {
-            return Err(Error::dollar_prefixed_field(format!(
-                "Document can't have $ prefixed field names: {k}"
-            )));
+            return Err(Error::dollar_prefixed_field(format!("Document can't have $ prefixed field names: {k}")));
         }
     }
     if doc.keys().next().map(String::as_str) != Some("_id") {
@@ -242,10 +240,10 @@ fn walk(v: &Bson, rest: &[String], fv: &mut FieldValues) {
 /// whether the document makes the index multikey. `None` means the document
 /// is not indexed (sparse/partial).
 pub fn index_keys(index: &IndexMeta, doc: &Document) -> Result<Option<(BTreeSet<Vec<u8>>, bool)>> {
-    if let Some(pf) = &index.partial {
-        if !Matcher::parse(pf)?.matches(doc)? {
-            return Ok(None);
-        }
+    if let Some(pf) = &index.partial
+        && !Matcher::parse(pf)?.matches(doc)?
+    {
+        return Ok(None);
     }
     let fields: Vec<FieldValues> = index.key_paths().iter().map(|p| field_values(doc, p)).collect();
     if index.sparse && !fields.iter().any(|f| f.found) {
@@ -292,7 +290,11 @@ pub fn parse_index_spec(spec: &Document, id: i64) -> Result<IndexMeta> {
             }
             v => match crate::bsonutil::as_f64(v) {
                 Some(f) if f != 0.0 && f.is_finite() => {}
-                _ => return Err(Error::cannot_create_index(format!("Values in the index key pattern can't be 0 or non-numeric; found {k}: {v}"))),
+                _ => {
+                    return Err(Error::cannot_create_index(format!(
+                        "Values in the index key pattern can't be 0 or non-numeric; found {k}: {v}"
+                    )));
+                }
             },
         }
     }
@@ -323,7 +325,16 @@ pub fn parse_index_spec(spec: &Document, id: i64) -> Result<IndexMeta> {
     for k in spec.keys() {
         if !matches!(
             k.as_str(),
-            "key" | "name" | "unique" | "sparse" | "partialFilterExpression" | "expireAfterSeconds" | "v" | "background" | "ns" | "hidden"
+            "key"
+                | "name"
+                | "unique"
+                | "sparse"
+                | "partialFilterExpression"
+                | "expireAfterSeconds"
+                | "v"
+                | "background"
+                | "ns"
+                | "hidden"
                 | "collation"
         ) {
             return Err(Error::invalid_options(format!("The field '{k}' is not valid for an index specification")));
@@ -480,7 +491,14 @@ fn index_by_name<'m>(meta: &'m CollMeta, name: &str) -> Result<&'m IndexMeta> {
 
 /// Finds matching documents using any readable pair of tables (read or
 /// write transaction). Returns (id_key, document) pairs.
-pub fn scan_matching<D, I>(docs: &D, idx: &I, meta: &CollMeta, m: &Matcher, plan: &Plan, opts: &ScanOpts) -> Result<Vec<(Vec<u8>, Document)>>
+pub fn scan_matching<D, I>(
+    docs: &D,
+    idx: &I,
+    meta: &CollMeta,
+    m: &Matcher,
+    plan: &Plan,
+    opts: &ScanOpts,
+) -> Result<Vec<(Vec<u8>, Document)>>
 where
     D: ReadableTable<&'static [u8], &'static [u8]>,
     I: ReadableTable<&'static [u8], &'static [u8]>,
@@ -710,11 +728,7 @@ fn dup_key_error(ns: &str, index: &IndexMeta, doc: &Document) -> Error {
         kv.insert(k.clone(), v);
     }
     let shown: Vec<String> = kv.iter().map(|(k, v)| format!("{k}: {v}")).collect();
-    Error::duplicate_key(format!(
-        "E11000 duplicate key error collection: {ns} index: {} dup key: {{ {} }}",
-        index.name,
-        shown.join(", ")
-    ))
+    Error::duplicate_key(format!("E11000 duplicate key error collection: {ns} index: {} dup key: {{ {} }}", index.name, shown.join(", ")))
 }
 
 impl WriteColl {
@@ -839,12 +853,8 @@ impl WriteColl {
     pub fn replace(&mut self, txn: &WriteTransaction, idk: &[u8], old: &Document, new: Document) -> Result<Document> {
         let new = prepare_for_storage(new)?;
         let new_entries = self.entries_for(txn, &new, idk)?;
-        let old_entries: Vec<(i64, BTreeSet<Vec<u8>>)> = self
-            .meta
-            .indexes
-            .iter()
-            .map(|i| Ok((i.id, index_keys(i, old)?.map(|(k, _)| k).unwrap_or_default())))
-            .collect::<Result<_>>()?;
+        let old_entries: Vec<(i64, BTreeSet<Vec<u8>>)> =
+            self.meta.indexes.iter().map(|i| Ok((i.id, index_keys(i, old)?.map(|(k, _)| k).unwrap_or_default()))).collect::<Result<_>>()?;
         let bytes = doc_to_bytes(&new)?;
         txn.open_table(DOCS)?.insert(doc_key(self.meta.id, idk).as_slice(), bytes.as_slice())?;
         let mut idx = txn.open_table(INDEXES)?;
@@ -917,7 +927,12 @@ impl WriteColl {
     }
 
     pub fn drop_index(&mut self, txn: &WriteTransaction, name: &str) -> Result<()> {
-        let pos = self.meta.indexes.iter().position(|i| i.name == name).ok_or_else(|| Error::index_not_found(format!("index not found with name [{name}]")))?;
+        let pos = self
+            .meta
+            .indexes
+            .iter()
+            .position(|i| i.name == name)
+            .ok_or_else(|| Error::index_not_found(format!("index not found with name [{name}]")))?;
         let index = self.meta.indexes.remove(pos);
         let base = index_prefix(self.meta.id, index.id);
         let end = prefix_successor(&base);

@@ -3,9 +3,9 @@
 //! an availability zone.
 
 use futures_util::TryStreamExt;
+use mongodb::Client;
 use mongodb::bson::{Document, doc};
 use mongodb::options::ClientOptions;
-use mongodb::Client;
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -42,7 +42,8 @@ impl Cluster {
             members.push(format!("{id}=127.0.0.1:{raft}/127.0.0.1:{client}"));
             nodes.push(Node { id, client_port: client, data_dir: dir.path().join(format!("n{id}")), child: None });
         }
-        let mut c = Cluster { _dir: dir, nodes, members: members.join(","), key_file, extra: extra.iter().map(|s| s.to_string()).collect() };
+        let mut c =
+            Cluster { _dir: dir, nodes, members: members.join(","), key_file, extra: extra.iter().map(|s| s.to_string()).collect() };
         for i in 0..c.nodes.len() {
             c.start(i);
         }
@@ -197,7 +198,7 @@ async fn followers_forward_writes_and_read_their_writes() {
     let d = coll.find_one(doc! {"_id": 1}).await.unwrap().unwrap();
     assert_eq!(d.get_i32("n").unwrap(), 5);
     let hello = c.database("admin").run_command(doc! {"hello": 1}).await.unwrap();
-    assert_eq!(hello.get_bool("isWritablePrimary").unwrap(), false);
+    assert!(!hello.get_bool("isWritablePrimary").unwrap());
     assert_eq!(hello.get_str("setName").unwrap(), "mango");
     assert_eq!(hello.get_array("hosts").unwrap().len(), 3);
 }
@@ -217,9 +218,8 @@ async fn minority_cannot_write() {
         }
     }
     let r = tokio::time::timeout(Duration::from_secs(20), coll.insert_one(doc! {"_id": 2})).await;
-    match r {
-        Ok(Ok(_)) => panic!("a minority accepted a write"),
-        Ok(Err(_)) | Err(_) => {}
+    if let Ok(Ok(_)) = r {
+        panic!("a minority accepted a write")
     }
     // Committed data is still readable on the survivor.
     assert_eq!(coll.count_documents(doc! {"_id": 1}).await.unwrap(), 1);
@@ -252,4 +252,66 @@ async fn lagging_node_catches_up_by_snapshot() {
     assert_eq!(n, 30);
     let log = std::fs::read_to_string(cluster.nodes[lagger].data_dir.with_extension("log")).unwrap();
     assert!(log.contains("installing snapshot"), "expected the lagging node to install a snapshot");
+}
+
+/// Randomly kills and restarts nodes (never more than one down at a time,
+/// like losing one AZ) while a client writes. Every acknowledged write must
+/// survive, retried increments must apply at most once, and all replicas
+/// must end up identical.
+#[tokio::test(flavor = "multi_thread")]
+async fn chaos_kill_restart_keeps_acknowledged_writes() {
+    let rounds: usize = std::env::var("MANGO_CHAOS_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(6);
+    let mut cluster = Cluster::new(3, &["--compact-threshold", "200", "--keep-entries", "50"]);
+    cluster.leader().await;
+    let client = replset_client(&cluster).await;
+    let coll = client.database("test").collection::<Document>("chaos");
+    coll.insert_one(doc! {"_id": "counter", "n": 0i64}).await.unwrap();
+
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let writer = {
+        let coll = coll.clone();
+        let stop = stop.clone();
+        tokio::spawn(async move {
+            let (mut acked_inserts, mut acked_incs, mut attempted_incs) = (Vec::new(), 0i64, 0i64);
+            let mut i = 0i64;
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                if coll.insert_one(doc! {"_id": i, "v": i}).await.is_ok() {
+                    acked_inserts.push(i);
+                }
+                attempted_incs += 1;
+                if coll.update_one(doc! {"_id": "counter"}, doc! {"$inc": {"n": 1i64}}).await.is_ok() {
+                    acked_incs += 1;
+                }
+                i += 1;
+            }
+            (acked_inserts, acked_incs, attempted_incs)
+        })
+    };
+    for round in 0..rounds {
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        let victim = rand::random::<u64>() as usize % 3;
+        eprintln!("chaos round {round}: killing node {}", victim + 1);
+        cluster.kill(victim);
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        cluster.start(victim);
+    }
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (acked_inserts, acked_incs, attempted_incs) = writer.await.unwrap();
+    eprintln!("acked {} inserts, {acked_incs}/{attempted_incs} increments", acked_inserts.len());
+    assert!(acked_inserts.len() > 20, "the cluster made too little progress");
+
+    cluster.converge().await;
+    let leader = cluster.leader().await;
+    let data = cluster.contents(leader, "chaos").await;
+    let present: std::collections::HashSet<i64> =
+        data.iter().filter_map(|d| d.get("_id").and_then(|v| v.as_i64().or(v.as_i32().map(i64::from)))).collect();
+    for id in &acked_inserts {
+        assert!(present.contains(id), "acknowledged insert {id} was lost");
+    }
+    let counter = data.iter().find(|d| d.get_str("_id") == Ok("counter")).unwrap().get_i64("n").unwrap();
+    assert!(counter >= acked_incs && counter <= attempted_incs, "counter {counter} outside [{acked_incs}, {attempted_incs}]");
+    for i in 0..3 {
+        assert_eq!(cluster.contents(i, "chaos").await, data, "replica {} diverged", i + 1);
+    }
 }

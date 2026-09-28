@@ -58,7 +58,10 @@ impl Server {
                     return Err(Error::invalid_options("Write batch sizes must be between 1 and 100000. Got 0 operations."));
                 }
                 if docs.len() > 100_000 {
-                    return Err(Error::invalid_options(format!("Write batch sizes must be between 1 and 100000. Got {} operations.", docs.len())));
+                    return Err(Error::invalid_options(format!(
+                        "Write batch sizes must be between 1 and 100000. Got {} operations.",
+                        docs.len()
+                    )));
                 }
                 for d in docs.iter_mut() {
                     if !d.contains_key("_id") {
@@ -73,7 +76,10 @@ impl Server {
                 let coll = coll_name(body, name)?;
                 let updates = docs_array(body, "updates")?;
                 if updates.is_empty() || updates.len() > 100_000 {
-                    return Err(Error::invalid_options(format!("Write batch sizes must be between 1 and 100000. Got {} operations.", updates.len())));
+                    return Err(Error::invalid_options(format!(
+                        "Write batch sizes must be between 1 and 100000. Got {} operations.",
+                        updates.len()
+                    )));
                 }
                 let upsert_ids = updates.iter().map(|_| ObjectId::new()).collect();
                 Command::Update { ns: format!("{db}.{coll}"), updates, ordered, upsert_ids }
@@ -82,7 +88,10 @@ impl Server {
                 let coll = coll_name(body, name)?;
                 let deletes = docs_array(body, "deletes")?;
                 if deletes.is_empty() || deletes.len() > 100_000 {
-                    return Err(Error::invalid_options(format!("Write batch sizes must be between 1 and 100000. Got {} operations.", deletes.len())));
+                    return Err(Error::invalid_options(format!(
+                        "Write batch sizes must be between 1 and 100000. Got {} operations.",
+                        deletes.len()
+                    )));
                 }
                 Command::Delete { ns: format!("{db}.{coll}"), deletes, ordered }
             }
@@ -114,14 +123,16 @@ impl Server {
             }
             "dropIndexes" | "deleteIndexes" => {
                 let coll = coll_name(body, name)?;
-                let index = body.get("index").cloned().ok_or_else(|| Error::failed_to_parse("BSON field 'dropIndexes.index' is missing"))?;
+                let index =
+                    body.get("index").cloned().ok_or_else(|| Error::failed_to_parse("BSON field 'dropIndexes.index' is missing"))?;
                 Command::DropIndexes { ns: format!("{db}.{coll}"), index }
             }
             "renameCollection" => {
                 if db != "admin" {
                     return Err(Error::unauthorized("renameCollection may only be run against the admin database."));
                 }
-                let from = get_str(body, "renameCollection")?.ok_or_else(|| Error::bad_value("renameCollection requires a source namespace"))?;
+                let from =
+                    get_str(body, "renameCollection")?.ok_or_else(|| Error::bad_value("renameCollection requires a source namespace"))?;
                 let to = get_str(body, "to")?.ok_or_else(|| Error::bad_value("renameCollection requires a 'to' namespace"))?;
                 let (fdb, fcoll) = split_ns(from);
                 validate_db_name(fdb)?;
@@ -167,11 +178,21 @@ impl Server {
         .map_err(|e| Error::internal(format!("query task failed: {e}")))??;
         match result {
             ReadResult::Reply(d) => Ok(d),
-            ReadResult::Cursor { ns, docs, batch_size, single_batch } => Ok(self.cursor_reply(conn, ns, docs, batch_size, single_batch, "firstBatch").await),
+            ReadResult::Cursor { ns, docs, batch_size, single_batch } => {
+                Ok(self.cursor_reply(conn, ns, docs, batch_size, single_batch, "firstBatch").await)
+            }
         }
     }
 
-    async fn cursor_reply(&self, conn: &Conn, ns: String, docs: Vec<Document>, batch_size: Option<usize>, single_batch: bool, field: &str) -> Document {
+    async fn cursor_reply(
+        &self,
+        conn: &Conn,
+        ns: String,
+        docs: Vec<Document>,
+        batch_size: Option<usize>,
+        single_batch: bool,
+        field: &str,
+    ) -> Document {
         let mut docs: VecDeque<Document> = docs.into();
         let batch = take_batch(&mut docs, batch_size);
         let id = if docs.is_empty() || single_batch {
@@ -205,7 +226,10 @@ impl Server {
             return Err(Error::cursor_not_found(format!("cursor id {id} not found")));
         };
         if cur.ns != format!("{db}.{coll}") {
-            return Err(Error::unauthorized(format!("Requested getMore on namespace '{db}.{coll}', but cursor belongs to a different namespace {}", cur.ns)));
+            return Err(Error::unauthorized(format!(
+                "Requested getMore on namespace '{db}.{coll}', but cursor belongs to a different namespace {}",
+                cur.ns
+            )));
         }
         if cur.owner != conn.owner() {
             return Err(Error::unauthorized("cursor belongs to a different user"));
@@ -429,7 +453,10 @@ fn aggregate_cmd(snap: &Snapshot, db: &str, body: &Document) -> Result<ReadResul
         return Err(Error::failed_to_parse("The 'cursor' option is required, except for aggregate with the explain argument"));
     }
     let vars: Vec<(String, Bson)> = match get_doc(body, "let")? {
-        Some(l) => l.iter().map(|(k, v)| Ok((k.clone(), crate::expr::Expr::parse(v)?.eval(&crate::expr::Vars::root(&Document::new()))?))).collect::<Result<_>>()?,
+        Some(l) => l
+            .iter()
+            .map(|(k, v)| Ok((k.clone(), crate::expr::Expr::parse(v)?.eval(&crate::expr::Vars::root(&Document::new()))?)))
+            .collect::<Result<_>>()?,
         None => vec![],
     };
     // A leading $match (without $$variables) selects the scan and can use an index.
@@ -469,7 +496,12 @@ fn list_collections(snap: &Snapshot, db: &str, body: &Document) -> Result<ReadRe
             out.push(d);
         }
     }
-    Ok(ReadResult::Cursor { ns: format!("{db}.$cmd.listCollections"), docs: out, batch_size: batch_size_of(body, true)?, single_batch: false })
+    Ok(ReadResult::Cursor {
+        ns: format!("{db}.$cmd.listCollections"),
+        docs: out,
+        batch_size: batch_size_of(body, true)?,
+        single_batch: false,
+    })
 }
 
 fn list_indexes(snap: &Snapshot, db: &str, body: &Document) -> Result<ReadResult> {
@@ -494,7 +526,11 @@ fn list_databases(snap: &Snapshot, body: &Document) -> Result<Document> {
     let mut dbs = Vec::new();
     let mut total = 0i64;
     for (name, size) in sizes {
-        let d = if name_only { doc! {"name": &name} } else { doc! {"name": &name, "sizeOnDisk": size as i64, "empty": false} };
+        let d = if name_only {
+            doc! {"name": &name}
+        } else {
+            doc! {"name": &name, "sizeOnDisk": size as i64, "empty": false}
+        };
         if filter.matches(&d)? {
             total += size as i64;
             dbs.push(d);

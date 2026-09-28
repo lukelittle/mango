@@ -38,8 +38,12 @@ struct Args {
     cluster_name: String,
 
     /// File holding the shared secret nodes use to authenticate each other.
-    #[arg(long, env = "MANGO_CLUSTER_KEY_FILE")]
+    #[arg(long, env = "MANGO_CLUSTER_KEY_FILE", conflicts_with = "cluster_key")]
     cluster_key_file: Option<PathBuf>,
+
+    /// The shared cluster secret itself (prefer --cluster-key-file).
+    #[arg(long, env = "MANGO_CLUSTER_KEY", hide_env_values = true)]
+    cluster_key: Option<String>,
 
     /// Replica set name reported to drivers (defaults to the cluster name).
     #[arg(long, env = "MANGO_REPL_SET_NAME")]
@@ -131,17 +135,17 @@ fn real_main(args: Args) -> Result<(), String> {
         .clone()
         .or_else(|| members.iter().find(|m| m.id == node_id).map(|m| m.client_addr.clone()))
         .unwrap_or_else(|| format!("{}:{port}", hostname()));
-    let cluster_key = match &args.cluster_key_file {
-        Some(p) => {
+    let cluster_key = match (&args.cluster_key_file, &args.cluster_key) {
+        (Some(p), _) => {
             let k = std::fs::read(p).map_err(|e| format!("cannot read cluster key file {}: {e}", p.display()))?;
-            let k: Vec<u8> = String::from_utf8_lossy(&k).trim().as_bytes().to_vec();
-            if k.len() < 16 {
-                return Err("the cluster key must be at least 16 bytes".into());
-            }
-            Some(k)
+            Some(String::from_utf8_lossy(&k).trim().as_bytes().to_vec())
         }
-        None => None,
+        (None, Some(k)) => Some(k.trim().as_bytes().to_vec()),
+        (None, None) => None,
     };
+    if cluster_key.as_ref().is_some_and(|k| k.len() < 16) {
+        return Err("the cluster key must be at least 16 bytes".into());
+    }
     if members.len() > 1 && cluster_key.is_none() {
         tracing::warn!("no --cluster-key-file: peers are not authenticated; only use this on a trusted network");
     }

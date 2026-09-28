@@ -35,14 +35,22 @@ impl SortSpec {
         for (k, v) in spec {
             let asc = match v {
                 v if is_number(v) => match as_f64(v) {
-                    Some(f) if f == 1.0 => true,
-                    Some(f) if f == -1.0 => false,
-                    _ => return Err(Error::bad_value(format!("$sort key ordering must be 1 (for ascending) or -1 (for descending), found {v}"))),
+                    Some(1.0) => true,
+                    Some(-1.0) => false,
+                    _ => {
+                        return Err(Error::bad_value(format!(
+                            "$sort key ordering must be 1 (for ascending) or -1 (for descending), found {v}"
+                        )));
+                    }
                 },
                 Bson::Document(d) if d.contains_key("$meta") => {
                     return Err(Error::not_implemented("$meta sort keys are not supported by Mango"));
                 }
-                _ => return Err(Error::bad_value(format!("$sort key ordering must be 1 (for ascending) or -1 (for descending), found {v}"))),
+                _ => {
+                    return Err(Error::bad_value(format!(
+                        "$sort key ordering must be 1 (for ascending) or -1 (for descending), found {v}"
+                    )));
+                }
             };
             if k.is_empty() || k.split('.').any(|p| p.is_empty() || p.starts_with('$')) {
                 return Err(Error::bad_value(format!("invalid sort key '{k}'")));
@@ -140,13 +148,27 @@ pub enum Stage {
     Skip(usize),
     Group(Expr, Vec<(String, Acc)>),
     Count(String),
-    Unwind { path: Vec<String>, index_field: Option<String>, preserve: bool },
-    Lookup { from: String, local: Option<String>, foreign: Option<String>, lets: Vec<(String, Expr)>, pipeline: Vec<Stage>, as_field: Vec<String> },
+    Unwind {
+        path: Vec<String>,
+        index_field: Option<String>,
+        preserve: bool,
+    },
+    Lookup {
+        from: String,
+        local: Option<String>,
+        foreign: Option<String>,
+        lets: Vec<(String, Expr)>,
+        pipeline: Vec<Stage>,
+        as_field: Vec<String>,
+    },
     ReplaceRoot(Expr),
     SortByCount(Expr),
     Facet(Vec<(String, Vec<Stage>)>),
     Sample(usize),
-    UnionWith { coll: String, pipeline: Vec<Stage> },
+    UnionWith {
+        coll: String,
+        pipeline: Vec<Stage>,
+    },
 }
 
 pub fn parse_pipeline(stages: &[Bson]) -> Result<Vec<Stage>> {
@@ -176,7 +198,9 @@ fn non_negative(v: &Bson, stage: &str) -> Result<usize> {
 impl Stage {
     pub fn parse(d: &Document) -> Result<Stage> {
         if d.len() != 1 {
-            return Err(Error::location("A pipeline stage specification object must contain exactly one field.").with_code(40323, "Location40323"));
+            return Err(
+                Error::location("A pipeline stage specification object must contain exactly one field.").with_code(40323, "Location40323")
+            );
         }
         let (name, arg) = d.iter().next().unwrap();
         let as_doc = |what: &str| -> Result<&Document> {
@@ -297,7 +321,8 @@ impl Stage {
             }
             "$lookup" => {
                 let spec = as_doc("$lookup")?;
-                let from = spec.get_str("from").map_err(|_| Error::failed_to_parse("$lookup requires a 'from' collection name"))?.to_string();
+                let from =
+                    spec.get_str("from").map_err(|_| Error::failed_to_parse("$lookup requires a 'from' collection name"))?.to_string();
                 let as_field = spec.get_str("as").map_err(|_| Error::failed_to_parse("must specify 'as' field for a $lookup"))?;
                 let local = spec.get_str("localField").ok().map(String::from);
                 let foreign = spec.get_str("foreignField").ok().map(String::from);
@@ -360,7 +385,9 @@ impl Stage {
                 _ => return Err(Error::failed_to_parse("$unionWith requires a string or object argument")),
             },
             "$out" | "$merge" => {
-                return Err(Error::not_implemented(format!("{name} is not supported by Mango; write results with insert commands instead")));
+                return Err(Error::not_implemented(format!(
+                    "{name} is not supported by Mango; write results with insert commands instead"
+                )));
             }
             other => return Err(Error::location(format!("Unrecognized pipeline stage name: '{other}'")).with_code(40324, "Location40324")),
         })
@@ -750,7 +777,11 @@ mod tests {
     impl Source for NoSource {
         fn scan(&self, _: &str, coll: &str, _: &Matcher) -> Result<Vec<Document>> {
             if coll == "other" {
-                return Ok(vec![doc! {"_id": 10, "k": 1, "v": "a"}, doc! {"_id": 11, "k": 2, "v": "b"}, doc! {"_id": 12, "k": 1, "v": "c"}]);
+                return Ok(vec![
+                    doc! {"_id": 10, "k": 1, "v": "a"},
+                    doc! {"_id": 11, "k": 2, "v": "b"},
+                    doc! {"_id": 12, "k": 1, "v": "c"},
+                ]);
             }
             Ok(vec![])
         }
@@ -764,11 +795,7 @@ mod tests {
 
     #[test]
     fn group_sort_project() {
-        let docs = vec![
-            doc! {"_id": 1, "cat": "a", "n": 1},
-            doc! {"_id": 2, "cat": "b", "n": 5},
-            doc! {"_id": 3, "cat": "a", "n": 2.5},
-        ];
+        let docs = vec![doc! {"_id": 1, "cat": "a", "n": 1}, doc! {"_id": 2, "cat": "b", "n": 5}, doc! {"_id": 3, "cat": "a", "n": 2.5}];
         let out = run(
             vec![
                 doc! {"$group": {"_id": "$cat", "total": {"$sum": "$n"}, "c": {"$count": {}}, "ns": {"$push": "$n"}}},
@@ -779,7 +806,10 @@ mod tests {
         assert_eq!(out, vec![doc! {"_id": "a", "total": 3.5, "c": 2, "ns": [1, 2.5]}, doc! {"_id": "b", "total": 5, "c": 1, "ns": [5]}]);
         let out = run(vec![doc! {"$match": {"n": {"$gt": 1}}}, doc! {"$count": "k"}], docs.clone());
         assert_eq!(out, vec![doc! {"k": 2}]);
-        let out = run(vec![doc! {"$sort": {"n": -1}}, doc! {"$limit": 1}, doc! {"$project": {"_id": 0, "double": {"$multiply": ["$n", 2]}}}], docs);
+        let out = run(
+            vec![doc! {"$sort": {"n": -1}}, doc! {"$limit": 1}, doc! {"$project": {"_id": 0, "double": {"$multiply": ["$n", 2]}}}],
+            docs,
+        );
         assert_eq!(out, vec![doc! {"double": 10}]);
     }
 
@@ -791,7 +821,13 @@ mod tests {
         let out = run(vec![doc! {"$unwind": {"path": "$ks", "preserveNullAndEmptyArrays": true, "includeArrayIndex": "i"}}], docs.clone());
         assert_eq!(out.len(), 3);
         assert_eq!(out[2], doc! {"_id": 2, "i": Bson::Null});
-        let out = run(vec![doc! {"$lookup": {"from": "other", "localField": "ks", "foreignField": "k", "as": "m"}}, doc! {"$project": {"n": {"$size": "$m"}}}], docs);
+        let out = run(
+            vec![
+                doc! {"$lookup": {"from": "other", "localField": "ks", "foreignField": "k", "as": "m"}},
+                doc! {"$project": {"n": {"$size": "$m"}}},
+            ],
+            docs,
+        );
         assert_eq!(out, vec![doc! {"_id": 1, "n": 3}, doc! {"_id": 2, "n": 0}]);
     }
 
@@ -799,7 +835,9 @@ mod tests {
     fn lookup_pipeline_with_let() {
         let docs = vec![doc! {"_id": 1, "want": 2}];
         let out = run(
-            vec![doc! {"$lookup": {"from": "other", "let": {"w": "$want"}, "pipeline": [{"$match": {"$expr": {"$eq": ["$k", "$$w"]}}}], "as": "m"}}],
+            vec![
+                doc! {"$lookup": {"from": "other", "let": {"w": "$want"}, "pipeline": [{"$match": {"$expr": {"$eq": ["$k", "$$w"]}}}], "as": "m"}},
+            ],
             docs,
         );
         assert_eq!(out[0].get_array("m").unwrap().len(), 1);

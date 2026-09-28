@@ -106,12 +106,7 @@ impl Conversation {
         let user = decode_username(attr(&attrs, 'n').ok_or_else(auth_error)?);
         let client_nonce = attr(&attrs, 'r').ok_or_else(auth_error)?.to_string();
         let doc = lookup(&user)?.ok_or_else(auth_error)?;
-        let creds = doc
-            .get_document("credentials")
-            .ok()
-            .and_then(|c| c.get_document(MECHANISM).ok())
-            .cloned()
-            .ok_or_else(auth_error)?;
+        let creds = doc.get_document("credentials").ok().and_then(|c| c.get_document(MECHANISM).ok()).cloned().ok_or_else(auth_error)?;
         let server_nonce: String = B64.encode((0..24).map(|_| rand::random::<u8>()).collect::<Vec<u8>>());
         let nonce = format!("{client_nonce}{server_nonce}");
         let server_first = format!(

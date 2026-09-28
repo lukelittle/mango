@@ -154,7 +154,9 @@ impl Update {
                 "$pullAll" => OpKind::PullAll,
                 "$bit" => OpKind::Bit,
                 other if other.starts_with('$') => {
-                    return Err(Error::failed_to_parse(format!("Unknown modifier: {other}. Expected a valid update modifier or pipeline-style update specified as an array")));
+                    return Err(Error::failed_to_parse(format!(
+                        "Unknown modifier: {other}. Expected a valid update modifier or pipeline-style update specified as an array"
+                    )));
                 }
                 other => {
                     return Err(Error::failed_to_parse(format!(
@@ -217,11 +219,16 @@ impl Update {
                     },
                     OpKind::Bit => {
                         let Bson::Document(b) = v else {
-                            return Err(Error::bad_value(format!("The $bit modifier is not compatible with a {}. You must pass in an embedded document", type_name(v))));
+                            return Err(Error::bad_value(format!(
+                                "The $bit modifier is not compatible with a {}. You must pass in an embedded document",
+                                type_name(v)
+                            )));
                         };
                         for (bop, bv) in b {
                             if !matches!(bop.as_str(), "and" | "or" | "xor") {
-                                return Err(Error::bad_value(format!("The $bit modifier only supports 'and', 'or', and 'xor', not '{bop}'")));
+                                return Err(Error::bad_value(format!(
+                                    "The $bit modifier only supports 'and', 'or', and 'xor', not '{bop}'"
+                                )));
                             }
                             if !matches!(bv, Bson::Int32(_) | Bson::Int64(_)) {
                                 return Err(Error::bad_value("The $bit modifier field must be an Integer(32/64 bit)"));
@@ -350,7 +357,11 @@ fn validate_each(kind: OpKind, v: &Bson) -> Result<()> {
                     }
                 }
                 v if matches!(as_i64(v), Some(1) | Some(-1)) => {}
-                _ => return Err(Error::bad_value("The $sort is invalid: use 1/-1 to sort the whole element, or {field:1/-1} to sort embedded fields")),
+                _ => {
+                    return Err(Error::bad_value(
+                        "The $sort is invalid: use 1/-1 to sort the whole element, or {field:1/-1} to sort embedded fields",
+                    ));
+                }
             },
             other => {
                 return Err(Error::bad_value(format!(
@@ -517,11 +528,8 @@ impl Op {
                         }
                     }
                     Some(v) if is_number(v) => {
-                        let r = if self.kind == OpKind::Inc {
-                            checked_arith(v, &self.arg, true)
-                        } else {
-                            checked_arith(v, &self.arg, false)
-                        };
+                        let r =
+                            if self.kind == OpKind::Inc { checked_arith(v, &self.arg, true) } else { checked_arith(v, &self.arg, false) };
                         r.ok_or_else(|| {
                             Error::bad_value(format!(
                                 "Failed to apply {} operations to current value ({v}) for document {{_id: {}}}: overflow",
@@ -570,7 +578,9 @@ impl Op {
                 let to_parts: Vec<String> = to.split('.').map(String::from).collect();
                 for i in 1..to_parts.len() {
                     if matches!(get_at(doc, &to_parts[..i]), Some(Bson::Array(_))) {
-                        return Err(Error::bad_value(format!("The destination field cannot be an array element, '{to}' in doc has an array")));
+                        return Err(Error::bad_value(format!(
+                            "The destination field cannot be an array element, '{to}' in doc has an array"
+                        )));
                     }
                 }
                 unset_at(doc, parts);
@@ -657,7 +667,7 @@ impl Op {
             OpKind::Pull | OpKind::PullAll => {
                 let Some(v) = cur else { return Ok(()) };
                 let Bson::Array(a) = v else {
-                    return Err(Error::bad_value(format!("Cannot apply $pull to a non-array value")));
+                    return Err(Error::bad_value("Cannot apply $pull to a non-array value".to_string()));
                 };
                 let kept: Vec<Bson> = if self.kind == OpKind::PullAll {
                     let Bson::Array(remove) = &self.arg else { unreachable!() };
@@ -810,20 +820,20 @@ fn expand_rec(doc: &Document, parts: &[String], i: usize, prefix: Vec<String>, c
     base.extend_from_slice(&parts[i..seg]);
     let target = if base.is_empty() { None } else { get_at(doc, &base) };
     let Some(Bson::Array(arr)) = target else {
-        return Err(Error::bad_value(format!(
-            "The path '{}' must exist in the document in order to apply array updates.",
-            base.join(".")
-        )));
+        return Err(Error::bad_value(format!("The path '{}' must exist in the document in order to apply array updates.", base.join("."))));
     };
     let token = &parts[seg];
     let ident = &token[2..token.len() - 1];
-    let filter = if ident.is_empty() {
-        None
-    } else {
-        Some(ctx.array_filters.iter().find(|(id, _)| id == ident).map(|(_, m)| m).ok_or_else(|| {
-            Error::bad_value(format!("No array filter found for identifier '{ident}' in path '{}'", parts.join(".")))
-        })?)
-    };
+    let filter =
+        if ident.is_empty() {
+            None
+        } else {
+            Some(
+                ctx.array_filters.iter().find(|(id, _)| id == ident).map(|(_, m)| m).ok_or_else(|| {
+                    Error::bad_value(format!("No array filter found for identifier '{ident}' in path '{}'", parts.join(".")))
+                })?,
+            )
+        };
     for (idx, elem) in arr.iter().enumerate() {
         if let Some(m) = filter {
             let mut probe = Document::new();
@@ -850,9 +860,7 @@ pub fn check_array_filters_used(update: &Update, filters: &[(String, Matcher)]) 
     for (ident, _) in filters {
         let tok = format!("$[{ident}]");
         if !ops.iter().any(|o| o.path.split('.').any(|p| p == tok)) {
-            return Err(Error::failed_to_parse(format!(
-                "The array filter for identifier '{ident}' was not used in the update"
-            )));
+            return Err(Error::failed_to_parse(format!("The array filter for identifier '{ident}' was not used in the update")));
         }
     }
     Ok(())
@@ -926,7 +934,10 @@ mod tests {
         assert_eq!(run(d.clone(), doc! {"$addToSet": {"arr": 2}}).unwrap().get("arr"), Some(&Bson::from(vec![1, 2])));
         assert_eq!(run(d.clone(), doc! {"$pull": {"arr": {"$gt": 1}}}).unwrap().get("arr"), Some(&Bson::from(vec![1])));
         assert_eq!(run(d.clone(), doc! {"$pop": {"arr": -1}}).unwrap().get("arr"), Some(&Bson::from(vec![2])));
-        assert_eq!(run(d.clone(), doc! {"$set": {"arr.3": 9}}).unwrap().get("arr"), Some(&Bson::Array(vec![1.into(), 2.into(), Bson::Null, 9.into()])));
+        assert_eq!(
+            run(d.clone(), doc! {"$set": {"arr.3": 9}}).unwrap().get("arr"),
+            Some(&Bson::Array(vec![1.into(), 2.into(), Bson::Null, 9.into()]))
+        );
         assert_eq!(run(d.clone(), doc! {"$rename": {"a": "z"}}).unwrap(), doc! {"_id": 1, "arr": [1, 2], "z": 1});
         assert_eq!(run(d.clone(), doc! {"$max": {"a": 5}}).unwrap().get("a"), Some(&Bson::Int32(5)));
         assert_eq!(run(d.clone(), doc! {"$min": {"a": 5}}).unwrap().get("a"), Some(&Bson::Int32(1)));

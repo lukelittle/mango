@@ -1,0 +1,160 @@
+# Mango on Kubernetes: a 3-node cluster spread across availability zones.
+#
+#   kubectl create namespace mango
+#   kubectl -n mango create secret generic mango-secrets \
+#     --from-literal=cluster-key="$(openssl rand -hex 32)" \
+#     --from-literal=root-password="$(openssl rand -base64 24)"
+#   kubectl -n mango apply -f mango.yaml
+#
+# Every pod is pinned to a different zone (topology.kubernetes.io/zone), so
+# losing one zone leaves a majority and the cluster keeps accepting writes.
+# Connect from inside the cluster with:
+#   mongodb://root:<password>@mango-0.mango.mango.svc.cluster.local:27017,mango-1.mango.mango.svc.cluster.local:27017,mango-2.mango.mango.svc.cluster.local:27017/?replicaSet=mango&authSource=admin
+# or through the load-balanced service (any node accepts writes):
+#   mongodb://root:<password>@mango-client.mango.svc.cluster.local:27017/?directConnection=true&authSource=admin
+#
+# To run 5 nodes (tolerates losing 2), set replicas: 5 and add members 4 and 5
+# to MANGO_MEMBERS. Membership is fixed when the cluster is first created.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mango
+  labels: {app.kubernetes.io/name: mango}
+spec:
+  # Headless: gives each pod a stable DNS name (mango-0.mango, ...).
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: {app.kubernetes.io/name: mango}
+  ports:
+    - {name: mongodb, port: 27017, targetPort: 27017}
+    - {name: raft, port: 7017, targetPort: 7017}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mango-client
+  labels: {app.kubernetes.io/name: mango}
+spec:
+  selector: {app.kubernetes.io/name: mango}
+  ports:
+    - {name: mongodb, port: 27017, targetPort: 27017}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mango
+spec:
+  # Voluntary disruptions (drains, upgrades) never take down a majority.
+  maxUnavailable: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: mango}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mango
+  labels: {app.kubernetes.io/name: mango}
+spec:
+  serviceName: mango
+  replicas: 3
+  # All members must be up to elect the first leader; start them together.
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels: {app.kubernetes.io/name: mango}
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: mango}
+    spec:
+      terminationGracePeriodSeconds: 30
+      topologySpreadConstraints:
+        # One pod per zone; refuse to double up (that would let one zone
+        # outage take out a majority).
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels: {app.kubernetes.io/name: mango}
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels: {app.kubernetes.io/name: mango}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: mango
+          image: ghcr.io/lukelittle/mango:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: mongodb, containerPort: 27017}
+            - {name: raft, containerPort: 7017}
+          env:
+            - name: POD_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - name: POD_NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+            - name: CLUSTER_DOMAIN
+              value: cluster.local
+            - name: MANGO_NODE_ID_FROM_HOSTNAME
+              value: "true"
+            - name: MANGO_DATA_DIR
+              value: /data
+            - name: MANGO_BIND
+              value: 0.0.0.0:27017
+            # Raft addresses use the short in-namespace names; client
+            # addresses are fully qualified so drivers anywhere in the
+            # cluster can resolve the hosts Mango reports.
+            - name: MANGO_MEMBERS
+              value: >-
+                1=mango-0.mango:7017/mango-0.mango.$(POD_NAMESPACE).svc.$(CLUSTER_DOMAIN):27017,
+                2=mango-1.mango:7017/mango-1.mango.$(POD_NAMESPACE).svc.$(CLUSTER_DOMAIN):27017,
+                3=mango-2.mango:7017/mango-2.mango.$(POD_NAMESPACE).svc.$(CLUSTER_DOMAIN):27017
+            - name: MANGO_ADVERTISE
+              value: $(POD_NAME).mango.$(POD_NAMESPACE).svc.$(CLUSTER_DOMAIN):27017
+            - name: MANGO_CLUSTER_KEY_FILE
+              value: /etc/mango/cluster-key
+            - name: MANGO_AUTH
+              value: "true"
+            - name: MANGO_ROOT_USER
+              value: root
+            - name: MANGO_ROOT_PASSWORD
+              valueFrom: {secretKeyRef: {name: mango-secrets, key: root-password}}
+          readinessProbe:
+            tcpSocket: {port: 27017}
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: {port: 27017}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests: {cpu: 250m, memory: 256Mi}
+            limits: {memory: 2Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: secrets, mountPath: /etc/mango, readOnly: true}
+      volumes:
+        - name: secrets
+          secret:
+            secretName: mango-secrets
+            items: [{key: cluster-key, path: cluster-key}]
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        # Use a zonal storage class with volumeBindingMode: WaitForFirstConsumer
+        # (the default on EKS/GKE/AKS) so each volume lands in its pod's zone.
+        resources:
+          requests: {storage: 20Gi}

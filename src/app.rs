@@ -62,7 +62,8 @@ pub struct Running {
 pub async fn start(cfg: Config) -> Result<Running> {
     std::fs::create_dir_all(&cfg.data_dir)?;
     let store = Arc::new(Store::open(&cfg.data_dir.join("mango.redb"))?);
-    let listener = tokio::net::TcpListener::bind(&cfg.bind).await.map_err(|e| Error::internal(format!("cannot listen on {}: {e}", cfg.bind)))?;
+    let listener =
+        tokio::net::TcpListener::bind(&cfg.bind).await.map_err(|e| Error::internal(format!("cannot listen on {}: {e}", cfg.bind)))?;
     let addr = listener.local_addr()?;
     let advertise = if cfg.advertise.ends_with(":0") { addr.to_string() } else { cfg.advertise.clone() };
     let members = if cfg.members.is_empty() {
@@ -89,7 +90,8 @@ pub async fn start(cfg: Config) -> Result<Running> {
         max_append_bytes: 4 << 20,
     };
     let raft = raft::start(rcfg, store.clone()).await?;
-    let repl_set_name = if cfg.report_standalone || !multi { None } else { Some(cfg.repl_set_name.clone().unwrap_or_else(|| cfg.cluster_name.clone())) };
+    let repl_set_name =
+        if cfg.report_standalone || !multi { None } else { Some(cfg.repl_set_name.clone().unwrap_or_else(|| cfg.cluster_name.clone())) };
     let scfg = ServerConfig {
         bind: cfg.bind.clone(),
         advertise,

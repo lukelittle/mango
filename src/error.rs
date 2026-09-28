@@ -114,13 +114,7 @@ macro_rules! from_redb {
         }
     )*};
 }
-from_redb!(
-    redb::StorageError,
-    redb::TableError,
-    redb::TransactionError,
-    redb::CommitError,
-    redb::DatabaseError
-);
+from_redb!(redb::StorageError, redb::TableError, redb::TransactionError, redb::CommitError, redb::DatabaseError);
 
 impl From<bson::error::Error> for Error {
     fn from(e: bson::error::Error) -> Self {

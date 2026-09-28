@@ -77,14 +77,38 @@ impl Conn {
 
 /// Commands allowed before authentication.
 const UNAUTHENTICATED: &[&str] = &[
-    "hello", "isMaster", "ismaster", "ping", "buildInfo", "buildinfo", "saslStart", "saslContinue", "logout", "endSessions",
-    "connectionStatus", "whatsmyuri", "getnonce",
+    "hello",
+    "isMaster",
+    "ismaster",
+    "ping",
+    "buildInfo",
+    "buildinfo",
+    "saslStart",
+    "saslContinue",
+    "logout",
+    "endSessions",
+    "connectionStatus",
+    "whatsmyuri",
+    "getnonce",
 ];
 
 /// Commands that change data (need write privileges and a writable node).
 pub const WRITE_COMMANDS: &[&str] = &[
-    "insert", "update", "delete", "findAndModify", "findandmodify", "create", "drop", "dropDatabase", "createIndexes",
-    "dropIndexes", "deleteIndexes", "renameCollection", "createUser", "updateUser", "dropUser",
+    "insert",
+    "update",
+    "delete",
+    "findAndModify",
+    "findandmodify",
+    "create",
+    "drop",
+    "dropDatabase",
+    "createIndexes",
+    "dropIndexes",
+    "deleteIndexes",
+    "renameCollection",
+    "createUser",
+    "updateUser",
+    "dropUser",
 ];
 
 impl Server {
@@ -158,7 +182,10 @@ impl Server {
                     if !more_to_come {
                         let bytes = match wire::encode_msg_reply(request_id, &reply) {
                             Ok(b) if b.len() <= wire::MAX_MESSAGE_SIZE => b,
-                            _ => wire::encode_msg_reply(request_id, &Error::bson_too_large("reply exceeds the maximum message size").to_doc())?,
+                            _ => wire::encode_msg_reply(
+                                request_id,
+                                &Error::bson_too_large("reply exceeds the maximum message size").to_doc(),
+                            )?,
                         };
                         wire::write_all(&mut w, &bytes).await?;
                     }
@@ -224,7 +251,9 @@ impl Server {
         if let Some(Bson::Document(rc)) = body.get("readConcern") {
             match rc.get_str("level") {
                 Ok("linearizable") => self.raft.barrier(self.cfg.forward_writes).await?,
-                Ok("snapshot") => return Err(Error::not_implemented("readConcern 'snapshot' requires transactions, which Mango does not support")),
+                Ok("snapshot") => {
+                    return Err(Error::not_implemented("readConcern 'snapshot' requires transactions, which Mango does not support"));
+                }
                 _ => {}
             }
         }
@@ -270,9 +299,11 @@ impl Server {
             "usersInfo" => self.users_info(db, body),
             "insert" | "update" | "delete" | "findAndModify" | "findandmodify" | "create" | "drop" | "dropDatabase" | "createIndexes"
             | "dropIndexes" | "deleteIndexes" | "renameCollection" => self.write_command(db, name, body).await,
-            "find" | "getMore" | "killCursors" | "count" | "distinct" | "aggregate" | "listCollections" | "listIndexes" | "listDatabases"
-            | "dbStats" | "collStats" | "explain" => self.read_command(conn, db, name, body).await,
-            "commitTransaction" | "abortTransaction" => Err(Error::no_such_transaction("Mango does not support multi-document transactions")),
+            "find" | "getMore" | "killCursors" | "count" | "distinct" | "aggregate" | "listCollections" | "listIndexes"
+            | "listDatabases" | "dbStats" | "collStats" | "explain" => self.read_command(conn, db, name, body).await,
+            "commitTransaction" | "abortTransaction" => {
+                Err(Error::no_such_transaction("Mango does not support multi-document transactions"))
+            }
             other => Err(Error::command_not_found(format!("no such command: '{other}'"))),
         }
     }
@@ -316,11 +347,11 @@ impl Server {
                 d.insert("ismaster", is_leader || self.cfg.forward_writes);
             }
         }
-        if let Some(Bson::String(u)) = body.get("saslSupportedMechs")
-            && let Some((udb, uname)) = u.split_once('.')
-            && let Ok(snap) = self.store.snapshot()
-            && let Ok(Some(_)) = snap.user(udb, uname)
-        {
+        // Mango only implements SCRAM-SHA-256, so it is advertised for any
+        // user name (some drivers ask about "admin.<user>" whatever the
+        // authSource, and answering the same way for every name avoids
+        // revealing which users exist).
+        if body.contains_key("saslSupportedMechs") {
             d.insert("saslSupportedMechs", vec![auth::MECHANISM]);
         }
         d.insert("maxBsonObjectSize", MAX_BSON_SIZE);
@@ -352,7 +383,8 @@ impl Server {
                 md.insert("health", 1.0);
                 md.insert("appliedIndex", st.applied_index as i64);
             } else if let Some(p) = st.peers.iter().find(|p| p.id == m.id) {
-                let healthy = st.role != Role::Leader || p.last_ack_millis_ago.is_some_and(|ms| ms < self.raft.cfg.election_max.as_millis() as u64);
+                let healthy =
+                    st.role != Role::Leader || p.last_ack_millis_ago.is_some_and(|ms| ms < self.raft.cfg.election_min.as_millis() as u64);
                 md.insert("health", if healthy { 1.0 } else { 0.0 });
                 if st.role == Role::Leader {
                     md.insert("matchIndex", p.match_index as i64);
@@ -377,7 +409,8 @@ impl Server {
         let Some(set) = &self.cfg.repl_set_name else {
             return Err(Error { code: 76, code_name: "NoReplicationEnabled", msg: "not running with --replSet".into() });
         };
-        let members: Vec<Document> = self.raft.cfg.members.iter().map(|m| doc! {"_id": m.id as i64, "host": &m.client_addr, "votes": 1, "priority": 1.0}).collect();
+        let members: Vec<Document> =
+            self.raft.cfg.members.iter().map(|m| doc! {"_id": m.id as i64, "host": &m.client_addr, "votes": 1, "priority": 1.0}).collect();
         Ok(doc! {"config": {"_id": set.clone(), "version": 1, "members": members, "protocolVersion": 1i64}, "ok": 1.0})
     }
 
@@ -430,7 +463,11 @@ impl Server {
     async fn sasl_start(&self, conn: &mut Conn, db: &str, body: &Document) -> Result<Document> {
         let mech = body.get_str("mechanism").unwrap_or("");
         if mech != auth::MECHANISM {
-            return Err(Error { code: 334, code_name: "MechanismUnavailable", msg: format!("Received authentication for mechanism {mech} which is not enabled") });
+            return Err(Error {
+                code: 334,
+                code_name: "MechanismUnavailable",
+                msg: format!("Received authentication for mechanism {mech} which is not enabled"),
+            });
         }
         let payload = sasl_payload(body)?;
         let snap = self.store.snapshot()?;
@@ -487,9 +524,11 @@ impl Server {
     async fn update_user(&self, db: &str, body: &Document) -> Result<Document> {
         let user = body.get_str("updateUser").map_err(|_| Error::bad_value("updateUser must be a string"))?;
         let snap = self.store.snapshot()?;
-        let existing = snap
-            .user(db, user)?
-            .ok_or_else(|| Error { code: 11, code_name: "UserNotFound", msg: format!("User {user}@{db} not found") })?;
+        let existing = snap.user(db, user)?.ok_or_else(|| Error {
+            code: 11,
+            code_name: "UserNotFound",
+            msg: format!("User {user}@{db} not found"),
+        })?;
         let roles = body.get("roles").cloned().unwrap_or_else(|| existing.get("roles").cloned().unwrap_or(Bson::Array(vec![])));
         let doc = match body.get_str("pwd") {
             Ok(pwd) => auth::user_doc(db, user, pwd, roles),
@@ -668,10 +707,42 @@ fn get_parameter(body: &Document) -> Document {
 fn list_commands() -> Document {
     let mut cmds = Document::new();
     for c in [
-        "aggregate", "buildInfo", "collStats", "connectionStatus", "count", "create", "createIndexes", "createUser", "dbStats", "delete",
-        "distinct", "drop", "dropDatabase", "dropIndexes", "dropUser", "endSessions", "explain", "find", "findAndModify", "getMore",
-        "hello", "insert", "killCursors", "listCollections", "listDatabases", "listIndexes", "mangoStatus", "ping", "renameCollection",
-        "replSetGetStatus", "saslContinue", "saslStart", "serverStatus", "update", "updateUser", "usersInfo",
+        "aggregate",
+        "buildInfo",
+        "collStats",
+        "connectionStatus",
+        "count",
+        "create",
+        "createIndexes",
+        "createUser",
+        "dbStats",
+        "delete",
+        "distinct",
+        "drop",
+        "dropDatabase",
+        "dropIndexes",
+        "dropUser",
+        "endSessions",
+        "explain",
+        "find",
+        "findAndModify",
+        "getMore",
+        "hello",
+        "insert",
+        "killCursors",
+        "listCollections",
+        "listDatabases",
+        "listIndexes",
+        "mangoStatus",
+        "ping",
+        "renameCollection",
+        "replSetGetStatus",
+        "saslContinue",
+        "saslStart",
+        "serverStatus",
+        "update",
+        "updateUser",
+        "usersInfo",
     ] {
         cmds.insert(c, doc! {"help": "", "adminOnly": false});
     }

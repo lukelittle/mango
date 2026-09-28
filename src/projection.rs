@@ -50,7 +50,11 @@ impl Projection {
         for (path, v) in flat {
             let kind = match &v {
                 Bson::Boolean(_) | Bson::Int32(_) | Bson::Int64(_) | Bson::Double(_) | Bson::Decimal128(_) => {
-                    if truthy(&v) { Kind::Include } else { Kind::Exclude }
+                    if truthy(&v) {
+                        Kind::Include
+                    } else {
+                        Kind::Exclude
+                    }
                 }
                 Bson::Document(d) if find_mode && d.len() == 1 && d.contains_key("$slice") => {
                     let arg = d.get("$slice").unwrap();
@@ -227,9 +231,7 @@ fn flatten(spec: &Document, prefix: &str, find_mode: bool, out: &mut Vec<(String
         }
         let path = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
         match v {
-            Bson::Document(d) if !d.is_empty() && !d.keys().next().unwrap().starts_with('$') => {
-                flatten(d, &path, find_mode, out)?
-            }
+            Bson::Document(d) if !d.is_empty() && !d.keys().next().unwrap().starts_with('$') => flatten(d, &path, find_mode, out)?,
             Bson::Document(d) if d.is_empty() => {
                 return Err(Error::bad_value(format!("An empty sub-projection is not a valid value. Found empty object at path {path}")));
             }

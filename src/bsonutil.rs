@@ -169,10 +169,7 @@ pub fn get_int(doc: &Document, key: &str) -> Result<Option<i64>> {
         None | Some(Bson::Null) => Ok(None),
         Some(v) => match as_f64(v) {
             Some(f) if f.fract() == 0.0 => Ok(Some(f as i64)),
-            _ => Err(Error::type_mismatch(format!(
-                "Field '{key}' should be an integer, but found {}",
-                type_name(v)
-            ))),
+            _ => Err(Error::type_mismatch(format!("Field '{key}' should be an integer, but found {}", type_name(v)))),
         },
     }
 }
@@ -182,10 +179,7 @@ pub fn get_bool(doc: &Document, key: &str) -> Result<Option<bool>> {
         None | Some(Bson::Null) => Ok(None),
         Some(Bson::Boolean(b)) => Ok(Some(*b)),
         Some(v) if is_number(v) => Ok(Some(truthy(v))),
-        Some(v) => Err(Error::type_mismatch(format!(
-            "Field '{key}' should be a boolean, but found {}",
-            type_name(v)
-        ))),
+        Some(v) => Err(Error::type_mismatch(format!("Field '{key}' should be a boolean, but found {}", type_name(v)))),
     }
 }
 
@@ -193,10 +187,7 @@ pub fn get_doc<'a>(doc: &'a Document, key: &str) -> Result<Option<&'a Document>>
     match doc.get(key) {
         None | Some(Bson::Null) => Ok(None),
         Some(Bson::Document(d)) => Ok(Some(d)),
-        Some(v) => Err(Error::type_mismatch(format!(
-            "Field '{key}' should be an object, but found {}",
-            type_name(v)
-        ))),
+        Some(v) => Err(Error::type_mismatch(format!("Field '{key}' should be an object, but found {}", type_name(v)))),
     }
 }
 
@@ -204,17 +195,11 @@ pub fn get_str<'a>(doc: &'a Document, key: &str) -> Result<Option<&'a str>> {
     match doc.get(key) {
         None | Some(Bson::Null) => Ok(None),
         Some(Bson::String(s)) => Ok(Some(s)),
-        Some(v) => Err(Error::type_mismatch(format!(
-            "Field '{key}' should be a string, but found {}",
-            type_name(v)
-        ))),
+        Some(v) => Err(Error::type_mismatch(format!("Field '{key}' should be a string, but found {}", type_name(v)))),
     }
 }
 
 /// Current wall-clock time in milliseconds since the epoch.
 pub fn now_millis() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }

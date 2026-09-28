@@ -1,0 +1,57 @@
+# A three-node Mango cluster on one machine, one node per simulated
+# availability zone. Good for development and for trying failover:
+#
+#   export MANGO_CLUSTER_KEY=$(openssl rand -hex 32)   # keep it; nodes must share it
+#   docker compose up -d
+#   mongosh "mongodb://localhost:27017,localhost:27018,localhost:27019/?replicaSet=mango"
+#   docker compose kill mango-a      # lose "zone a"; writes continue on the others
+#
+# Each node advertises localhost:<its port>, so drivers on this machine can
+# use the replica-set URI above. Any single node also accepts writes directly
+# (followers forward them to the leader): mongodb://localhost:27018/?directConnection=true
+
+x-mango: &mango
+  image: ${MANGO_IMAGE:-mango:dev}
+  build:
+    context: ../..
+  restart: unless-stopped
+  environment: &env
+    MANGO_MEMBERS: "1=mango-a:7017/localhost:27017,2=mango-b:7017/localhost:27018,3=mango-c:7017/localhost:27019"
+    MANGO_CLUSTER_KEY: ${MANGO_CLUSTER_KEY:?set MANGO_CLUSTER_KEY (e.g. openssl rand -hex 32)}
+    MANGO_DATA_DIR: /data
+
+services:
+  mango-a:
+    <<: *mango
+    hostname: mango-a
+    environment:
+      <<: *env
+      MANGO_NODE_ID: "1"
+      MANGO_BIND: 0.0.0.0:27017
+    ports: ["27017:27017"]
+    volumes: ["mango-a:/data"]
+
+  mango-b:
+    <<: *mango
+    hostname: mango-b
+    environment:
+      <<: *env
+      MANGO_NODE_ID: "2"
+      MANGO_BIND: 0.0.0.0:27018
+    ports: ["27018:27018"]
+    volumes: ["mango-b:/data"]
+
+  mango-c:
+    <<: *mango
+    hostname: mango-c
+    environment:
+      <<: *env
+      MANGO_NODE_ID: "3"
+      MANGO_BIND: 0.0.0.0:27019
+    ports: ["27019:27019"]
+    volumes: ["mango-c:/data"]
+
+volumes:
+  mango-a:
+  mango-b:
+  mango-c:

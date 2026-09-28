@@ -110,11 +110,7 @@ async fn indexes_and_errors() {
     coll.insert_one(doc! {"email": "a@x.io"}).await.unwrap();
 
     // unordered bulk insert reports every failure
-    let err = coll
-        .insert_many(vec![doc! {"_id": 1}, doc! {"_id": 1}, doc! {"_id": 2}])
-        .ordered(false)
-        .await
-        .unwrap_err();
+    let err = coll.insert_many(vec![doc! {"_id": 1}, doc! {"_id": 1}, doc! {"_id": 2}]).ordered(false).await.unwrap_err();
     assert!(err.to_string().contains("E11000"));
     assert_eq!(coll.count_documents(doc! {"_id": {"$in": [1, 2]}}).await.unwrap(), 2);
 
@@ -137,7 +133,8 @@ async fn cursors_and_aggregation() {
     let ids: Vec<i32> = all.iter().map(|d| d.get_i32("_id").unwrap()).collect();
     assert_eq!(ids, (0..1000).collect::<Vec<_>>());
 
-    let limited: Vec<Document> = coll.find(doc! {"v": {"$gte": 500}}).sort(doc! {"v": 1}).skip(10).limit(5).await.unwrap().try_collect().await.unwrap();
+    let limited: Vec<Document> =
+        coll.find(doc! {"v": {"$gte": 500}}).sort(doc! {"v": 1}).skip(10).limit(5).await.unwrap().try_collect().await.unwrap();
     assert_eq!(limited.iter().map(|d| d.get_i32("v").unwrap()).collect::<Vec<_>>(), vec![510, 511, 512, 513, 514]);
 
     let out: Vec<Document> = coll
@@ -193,4 +190,45 @@ async fn transactions_are_rejected_clearly() {
     session.start_transaction().await.unwrap();
     let err = coll.insert_one(doc! {"a": 2}).session(&mut session).await.unwrap_err();
     assert!(err.to_string().contains("transactions"), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn scram_sha256_auth() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = Config::single_node(dir.path().to_path_buf(), "127.0.0.1:0");
+    cfg.heartbeat = Duration::from_millis(20);
+    cfg.election_timeout = Duration::from_millis(100);
+    cfg.auth = true;
+    cfg.root_user = Some(("root".into(), "hunter2-but-longer".into()));
+    let running = app::start(cfg).await.unwrap();
+    let addr = running.addr;
+
+    // Unauthenticated clients are refused.
+    let anon = Client::with_uri_str(format!("mongodb://{addr}/?directConnection=true")).await.unwrap();
+    let err = anon.database("x").collection::<Document>("y").insert_one(doc! {"a": 1}).await.unwrap_err();
+    assert!(err.to_string().contains("requires authentication"), "{err}");
+
+    // Wait for the root user to be bootstrapped, then log in.
+    let root_uri = format!("mongodb://root:hunter2-but-longer@{addr}/?directConnection=true&authSource=admin");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let root = loop {
+        let c = Client::with_uri_str(&root_uri).await.unwrap();
+        if c.database("x").collection::<Document>("y").insert_one(doc! {"a": 1}).await.is_ok() {
+            break c;
+        }
+        assert!(std::time::Instant::now() < deadline, "root login never succeeded");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+
+    // A read-only user can read but not write.
+    root.database("app").run_command(doc! {"createUser": "reader", "pwd": "readerpass", "roles": ["read"]}).await.unwrap();
+    let reader = Client::with_uri_str(format!("mongodb://reader:readerpass@{addr}/?directConnection=true&authSource=app")).await.unwrap();
+    assert_eq!(reader.database("x").collection::<Document>("y").count_documents(doc! {}).await.unwrap(), 1);
+    let err = reader.database("x").collection::<Document>("y").insert_one(doc! {"a": 2}).await.unwrap_err();
+    assert!(err.to_string().contains("not authorized"), "{err}");
+
+    // Wrong password fails.
+    let bad = Client::with_uri_str(format!("mongodb://root:wrong@{addr}/?directConnection=true&authSource=admin")).await.unwrap();
+    let err = bad.database("x").collection::<Document>("y").count_documents(doc! {}).await.unwrap_err();
+    assert!(err.to_string().to_lowercase().contains("auth"), "{err}");
 }

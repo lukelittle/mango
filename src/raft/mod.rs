@@ -121,9 +121,25 @@ enum Sent {
 
 enum Event {
     Rpc(Request, oneshot::Sender<Response>),
-    Response { peer: u64, term_sent: u64, sent: Sent, resp: std::result::Result<Response, Error> },
+    Response {
+        peer: u64,
+        term_sent: u64,
+        sent: Sent,
+        resp: std::result::Result<Response, Error>,
+    },
     Propose(Vec<u8>, oneshot::Sender<Outcome>),
-    SnapshotDone { peer: u64, term_sent: u64, last_index: u64, resp_term: u64, ok: bool },
+    SnapshotDone {
+        peer: u64,
+        term_sent: u64,
+        last_index: u64,
+        resp_term: u64,
+        ok: bool,
+    },
+    /// A snapshot chunk was acknowledged: the peer is alive and making progress.
+    SnapshotProgress {
+        peer: u64,
+        term_sent: u64,
+    },
 }
 
 struct PeerState {
@@ -133,7 +149,15 @@ struct PeerState {
     snapshotting: bool,
     last_sent: Option<Instant>,
     last_ack: Option<Instant>,
+    /// Don't start another snapshot transfer before this (after a failure).
+    snapshot_retry_at: Option<Instant>,
+    snapshot_backoff: Duration,
 }
+
+const SNAPSHOT_BACKOFF_MIN: Duration = Duration::from_secs(1);
+const SNAPSHOT_BACKOFF_MAX: Duration = Duration::from_secs(30);
+/// How long the final snapshot chunk (which triggers the install) may take.
+const SNAPSHOT_INSTALL_TIMEOUT: Duration = Duration::from_secs(120);
 
 struct IncomingSnapshot {
     path: PathBuf,
@@ -212,7 +236,21 @@ pub async fn start(cfg: RaftConfig, store: Arc<Store>) -> Result<RaftHandle> {
         .members
         .iter()
         .filter(|m| m.id != cfg.id)
-        .map(|m| (m.id, PeerState { next: log.last_index + 1, matched: 0, inflight: false, snapshotting: false, last_sent: None, last_ack: None }))
+        .map(|m| {
+            (
+                m.id,
+                PeerState {
+                    next: log.last_index + 1,
+                    matched: 0,
+                    inflight: false,
+                    snapshotting: false,
+                    last_sent: None,
+                    last_ack: None,
+                    snapshot_retry_at: None,
+                    snapshot_backoff: SNAPSHOT_BACKOFF_MIN,
+                },
+            )
+        })
         .collect();
     std::fs::create_dir_all(cfg.data_dir.join("snapshots"))?;
     let node = Node {
@@ -376,7 +414,13 @@ impl RaftHandle {
 
 impl Node {
     fn run(mut self, rx: std_mpsc::Receiver<Event>) -> Result<()> {
-        tracing::info!(id = self.cfg.id, term = self.log.term, last_index = self.log.last_index, applied = self.log.applied_index, "raft node starting");
+        tracing::info!(
+            id = self.cfg.id,
+            term = self.log.term,
+            last_index = self.log.last_index,
+            applied = self.log.applied_index,
+            "raft node starting"
+        );
         loop {
             let wait = self.next_wakeup().saturating_duration_since(Instant::now());
             match rx.recv_timeout(wait) {
@@ -485,10 +529,25 @@ impl Node {
                         p.matched = p.matched.max(last_index);
                         p.next = p.matched + 1;
                         p.last_ack = Some(Instant::now());
+                        p.snapshot_backoff = SNAPSHOT_BACKOFF_MIN;
+                        p.snapshot_retry_at = None;
                         tracing::info!(peer, last_index, "snapshot installed on peer");
+                    } else if !ok {
+                        // Back off so an unreachable peer doesn't make us
+                        // rebuild snapshots in a loop.
+                        p.snapshot_retry_at = Some(Instant::now() + p.snapshot_backoff);
+                        p.snapshot_backoff = (p.snapshot_backoff * 2).min(SNAPSHOT_BACKOFF_MAX);
                     }
                 }
                 self.advance_commit()?;
+            }
+            Event::SnapshotProgress { peer, term_sent } => {
+                if self.role == Role::Leader
+                    && term_sent == self.log.term
+                    && let Some(p) = self.peers.get_mut(&peer)
+                {
+                    p.last_ack = Some(Instant::now());
+                }
             }
         }
         Ok(())
@@ -500,7 +559,16 @@ impl Node {
             if now >= self.next_quorum_check {
                 // check-quorum: step down if a majority hasn't answered recently.
                 let window = self.cfg.election_max;
-                let alive = 1 + self.peers.values().filter(|p| p.last_ack.is_some_and(|t| now.duration_since(t) <= window)).count();
+                // A peer busy installing a snapshot can't answer heartbeats;
+                // it counts as alive while its transfer makes progress.
+                let alive = 1 + self
+                    .peers
+                    .values()
+                    .filter(|p| {
+                        let grace = if p.snapshotting { window + SNAPSHOT_INSTALL_TIMEOUT } else { window };
+                        p.last_ack.is_some_and(|t| now.duration_since(t) <= grace)
+                    })
+                    .count();
                 if alive < self.quorum() {
                     tracing::warn!(term = self.log.term, alive, "leader lost contact with a majority; stepping down");
                     self.become_follower(self.log.term, None)?;
@@ -524,7 +592,13 @@ impl Node {
             return self.become_candidate();
         }
         let term = self.log.term + 1;
-        let req = |_: u64| Request::Vote { term, candidate: self.cfg.id, last_index: self.log.last_index, last_term: self.log.last_term, pre_vote: true };
+        let req = |_: u64| Request::Vote {
+            term,
+            candidate: self.cfg.id,
+            last_index: self.log.last_index,
+            last_term: self.log.last_term,
+            pre_vote: true,
+        };
         let ids: Vec<u64> = self.peers.keys().copied().collect();
         for id in ids {
             self.send(id, term, Sent::Vote { pre: true }, req(id));
@@ -545,7 +619,13 @@ impl Node {
         }
         let ids: Vec<u64> = self.peers.keys().copied().collect();
         for id in ids {
-            let req = Request::Vote { term, candidate: self.cfg.id, last_index: self.log.last_index, last_term: self.log.last_term, pre_vote: false };
+            let req = Request::Vote {
+                term,
+                candidate: self.cfg.id,
+                last_index: self.log.last_index,
+                last_term: self.log.last_term,
+                pre_vote: false,
+            };
             self.send(id, term, Sent::Vote { pre: false }, req);
         }
         Ok(())
@@ -614,9 +694,7 @@ impl Node {
         if term > self.log.term {
             self.become_follower(term, None)?;
         }
-        let granted = term == self.log.term
-            && self.vote_available(candidate)
-            && self.log_up_to_date(last_index, last_term);
+        let granted = term == self.log.term && self.vote_available(candidate) && self.log_up_to_date(last_index, last_term);
         if granted {
             if self.log.vote != Some(candidate) {
                 self.log.save_hard_state(&self.store, term, Some(candidate))?;
@@ -704,43 +782,75 @@ impl Node {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn on_snapshot_chunk(&mut self, term: u64, leader: u64, last_index: u64, last_term: u64, offset: u64, data: Vec<u8>, done: bool) -> Result<Response> {
+    fn on_snapshot_chunk(
+        &mut self,
+        term: u64,
+        leader: u64,
+        last_index: u64,
+        last_term: u64,
+        offset: u64,
+        data: Vec<u8>,
+        done: bool,
+    ) -> Result<Response> {
         use std::io::Write;
         if term < self.log.term {
             return Ok(Response::Snapshot { term: self.log.term, ok: false });
         }
         self.accept_leader(term, leader)?;
         let t = self.log.term;
+        let reject = Response::Snapshot { term: t, ok: false };
         if offset == 0 {
-            let path = self.cfg.data_dir.join("snapshots").join(format!("recv-{last_index}"));
-            let file = std::fs::File::create(&path)?;
             if let Some(old) = self.incoming.take() {
-                let _ = std::fs::remove_file(old.path);
+                drop(old.file);
+                let _ = std::fs::remove_file(&old.path);
             }
-            self.incoming = Some(IncomingSnapshot { path, last_index, last_term, offset: 0, file });
+            let path = self.cfg.data_dir.join("snapshots").join(format!("recv-{t}-{last_index}-{:08x}", rand::random::<u32>()));
+            match std::fs::File::create(&path) {
+                Ok(file) => self.incoming = Some(IncomingSnapshot { path, last_index, last_term, offset: 0, file }),
+                Err(e) => {
+                    tracing::error!(error = %e, "cannot create snapshot file");
+                    return Ok(reject);
+                }
+            }
         }
         let Some(inc) = self.incoming.as_mut() else {
-            return Ok(Response::Snapshot { term: t, ok: false });
+            return Ok(reject);
         };
         if inc.last_index != last_index || inc.last_term != last_term || inc.offset != offset {
-            return Ok(Response::Snapshot { term: t, ok: false });
+            return Ok(reject);
         }
-        inc.file.write_all(&data)?;
+        if let Err(e) = inc.file.write_all(&data) {
+            tracing::error!(error = %e, "cannot write snapshot chunk");
+            let inc = self.incoming.take().unwrap();
+            let _ = std::fs::remove_file(&inc.path);
+            return Ok(reject);
+        }
         inc.offset += data.len() as u64;
         if !done {
             return Ok(Response::Snapshot { term: t, ok: true });
         }
         let inc = self.incoming.take().unwrap();
-        inc.file.sync_all()?;
+        let synced = inc.file.sync_all();
         drop(inc.file);
+        if let Err(e) = synced {
+            tracing::error!(error = %e, "cannot sync snapshot file");
+            let _ = std::fs::remove_file(&inc.path);
+            return Ok(reject);
+        }
         if last_index <= self.log.applied_index {
             let _ = std::fs::remove_file(&inc.path);
             return Ok(Response::Snapshot { term: t, ok: true });
         }
         let keep_suffix = self.log.term_at(&self.store, last_index)? == Some(last_term);
         tracing::info!(last_index, last_term, keep_suffix, "installing snapshot from leader");
-        snapshot::install(&self.store, &inc.path, last_index, last_term, keep_suffix)?;
+        // install() works in one write transaction: on error nothing is
+        // committed, so the node can keep running and the leader will retry.
+        let installed = snapshot::install(&self.store, &inc.path, last_index, last_term, keep_suffix);
         let _ = std::fs::remove_file(&inc.path);
+        if let Err(e) = installed {
+            tracing::error!(error = %e, "snapshot install failed");
+            return Ok(reject);
+        }
         self.log.start_index = last_index;
         self.log.start_term = last_term;
         self.log.applied_index = last_index;
@@ -767,13 +877,11 @@ impl Node {
     }
 
     fn on_response(&mut self, peer: u64, term_sent: u64, sent: Sent, resp: std::result::Result<Response, Error>) -> Result<()> {
-        match sent {
-            Sent::Append => {
-                if let Some(p) = self.peers.get_mut(&peer) {
-                    p.inflight = false;
-                }
-            }
-            Sent::Vote { .. } => {}
+        if matches!(sent, Sent::Append)
+            && term_sent == self.log.term
+            && let Some(p) = self.peers.get_mut(&peer)
+        {
+            p.inflight = false;
         }
         let resp = match resp {
             Ok(r) => r,
@@ -891,17 +999,29 @@ impl Node {
             if !due {
                 continue;
             }
-            if next <= self.log.start_index {
-                self.start_snapshot_transfer(id);
-                continue;
-            }
-            let prev_index = next - 1;
-            let Some(prev_term) = self.log.term_at(&self.store, prev_index)? else {
-                self.start_snapshot_transfer(id);
-                continue;
+            let (prev_index, prev_term, entries) = if next <= self.log.start_index {
+                let p = &self.peers[&id];
+                if p.snapshot_retry_at.is_some_and(|t| now < t) {
+                    continue;
+                }
+                if p.last_ack.is_some_and(|t| now.duration_since(t) <= self.cfg.election_max) {
+                    // The entries it needs are compacted: send a snapshot.
+                    self.start_snapshot_transfer(id);
+                    continue;
+                }
+                // Not heard from it lately: probe with an empty append at the
+                // compaction point before building a snapshot. If its log
+                // already reaches that point, no snapshot is needed at all.
+                (self.log.start_index, self.log.start_term, Vec::new())
+            } else {
+                let prev_index = next - 1;
+                let Some(prev_term) = self.log.term_at(&self.store, prev_index)? else {
+                    return Err(Error::internal(format!("log entry {prev_index} missing")));
+                };
+                (prev_index, prev_term, self.log.entries(&self.store, next, self.log.last_index, self.cfg.max_append_bytes)?)
             };
-            let entries = self.log.entries(&self.store, next, self.log.last_index, self.cfg.max_append_bytes)?;
-            let req = Request::Append { term: self.log.term, leader: self.cfg.id, prev_index, prev_term, entries, commit: self.commit_index };
+            let req =
+                Request::Append { term: self.log.term, leader: self.cfg.id, prev_index, prev_term, entries, commit: self.commit_index };
             let p = self.peers.get_mut(&id).unwrap();
             p.inflight = true;
             p.last_sent = Some(now);
@@ -934,22 +1054,29 @@ impl Node {
                 }
             };
             let result: std::result::Result<u64, u64> = async {
-                let data = tokio::fs::read(&path).await.map_err(|_| 0u64)?;
+                use tokio::io::AsyncReadExt;
                 const CHUNK: usize = 1 << 20;
-                let mut offset = 0usize;
+                let mut file = tokio::fs::File::open(&path).await.map_err(|_| 0u64)?;
+                let total = file.metadata().await.map_err(|_| 0u64)?.len();
+                let mut offset = 0u64;
                 loop {
-                    let end = (offset + CHUNK).min(data.len());
-                    let done = end == data.len();
-                    let req = Request::Snapshot { term, leader, last_index, last_term, offset: offset as u64, data: data[offset..end].to_vec(), done };
+                    let len = (total - offset).min(CHUNK as u64) as usize;
+                    let mut data = vec![0u8; len];
+                    file.read_exact(&mut data).await.map_err(|_| 0u64)?;
+                    let done = offset + len as u64 == total;
+                    let req = Request::Snapshot { term, leader, last_index, last_term, offset, data, done };
+                    let timeout = if done { SNAPSHOT_INSTALL_TIMEOUT } else { timeout };
                     match clients[&peer].call(req, timeout).await {
-                        Ok(Response::Snapshot { term: t, ok: true }) if t == term => {}
+                        Ok(Response::Snapshot { term: t, ok: true }) if t == term => {
+                            let _ = tx.send(Event::SnapshotProgress { peer, term_sent: term });
+                        }
                         Ok(Response::Snapshot { term: t, .. }) => return Err(t),
                         _ => return Err(0),
                     }
                     if done {
                         return Ok(last_index);
                     }
-                    offset = end;
+                    offset += len as u64;
                 }
             }
             .await;
@@ -1011,12 +1138,14 @@ impl Node {
 pub fn parse_members(s: &str) -> Result<Vec<Member>> {
     let mut out = Vec::new();
     for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
-        let (id, addrs) = part.split_once('=').ok_or_else(|| Error::bad_value(format!("bad member '{part}', expected id=raft_addr/client_addr")))?;
+        let (id, addrs) =
+            part.split_once('=').ok_or_else(|| Error::bad_value(format!("bad member '{part}', expected id=raft_addr/client_addr")))?;
         let id: u64 = id.trim().parse().map_err(|_| Error::bad_value(format!("bad member id in '{part}'")))?;
         if id == 0 {
             return Err(Error::bad_value("member ids must be positive"));
         }
-        let (raft, client) = addrs.split_once('/').ok_or_else(|| Error::bad_value(format!("bad member '{part}', expected id=raft_addr/client_addr")))?;
+        let (raft, client) =
+            addrs.split_once('/').ok_or_else(|| Error::bad_value(format!("bad member '{part}', expected id=raft_addr/client_addr")))?;
         out.push(Member { id, raft_addr: raft.trim().to_string(), client_addr: client.trim().to_string() });
     }
     let mut ids: Vec<u64> = out.iter().map(|m| m.id).collect();
